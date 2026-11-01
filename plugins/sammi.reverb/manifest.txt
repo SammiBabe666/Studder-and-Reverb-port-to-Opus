@@ -1,0 +1,10 @@
+# sammi.reverb: Hundekraft's reverb (OP-1 Workshop 3.1.1, the Elements / Dattorro tank), ported as a native effect
+# type for the synth, the drum and the master. blue time, green tone, white diffusion, orange mix.
+# No uses lines: the encoders turn its parameters on its effect page, as on a stock effect's.
+opmod     1
+id        sammi.reverb
+name      Reverb
+author    sammi
+version   1.0.0
+core      2.0
+adds      effect hkreverb

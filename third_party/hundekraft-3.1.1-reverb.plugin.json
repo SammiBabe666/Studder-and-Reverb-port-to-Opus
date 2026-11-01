@@ -1,0 +1,24 @@
+{
+  "name": "reverb",
+  "kind": "fx",
+  "order": 3,
+  "symbol": "FX_reverb",
+  "loadable": true,
+  "sources": [
+    "reverb.c"
+  ],
+  "defaults": [
+    16000,
+    20000,
+    16384,
+    12000
+  ],
+  "screen": {
+    "svg": "kalireverb.svg",
+    "symbol": "SCREEN_reverb"
+  },
+  "cost": {
+    "call": 13038,
+    "init": 12939
+  }
+}

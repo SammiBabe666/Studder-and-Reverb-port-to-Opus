@@ -1,0 +1,30 @@
+sammi.reverb and sammi.stutter 1.0.0 - Hundekraft's Reverb and STUTTER as Opus 2 plugins for the original OP-1
+==================================================================================================================
+
+NOT YET TESTED ON AN OP-1. Both plugins build with the Opus plugin kit, and their sound is bit-identical to
+Hundekraft's originals on a PC and as compiled Blackfin code in a simulator. The install, the effect pages and the real
+CPU load have not been tried on hardware. Developer mode on for the first tries (step 1).
+
+You need: an original OP-1 (not the OP-1 field) on firmware 246 with Opus 2 installed (the Opus site's patcher makes
+the update from your own op1_246.op1). Both plugins need core 2.0 or later, which every Opus 2 release has.
+
+1. Developer mode (for the first tries): open Opus's menu (hold synth + drum + tape + mixer together), T1 for the
+   system settings, switch "developer mode" on. While it is on, a plugin that crashes is not left out at the next
+   start and one that uses too much CPU is not switched off, so you see what it really does. Switch it off when done.
+2. Disk mode: shift + COM, then T3, and connect the OP-1 by USB.
+3. Copy mods/sammi.reverb.opmod and/or mods/sammi.stutter.opmod into the disk's "mods" folder. Each is a plugin of
+   its own: install one, the other, or both.
+4. Eject the disk, switch the OP-1 off and on.
+5. Opus's menu, T2 (the mods list): turn blue to "reverb" / "stutter": the row should say "loaded". Orange push on a
+   row shows its details (memory, its worst audio block, its version); green push shows its controls.
+6. Use it like any effect: on the synth, the drum or the mixer's master, choose the effect (the effect list, as for a
+   stock effect): "hkreverb" or "hkstutter". T3 switches it on and off.
+
+If something goes wrong: a plugin that crashes the OP-1 is left out at the next start ("skipped: crashed", outside
+developer mode). Holding Stop while switching the OP-1 on starts it with no plugins at all; then delete the file from
+the mods folder in disk mode. Opus never touches te-boot, the OP-1's own update and recovery mode.
+
+Controls: README.md ("The controls"), or docs/CONTROLS.md.
+Checksums: SHA256SUMS.txt (sha256sum -c SHA256SUMS.txt).
+Source, tests and build: the source/ folder; licence GPL-3.0-or-later with the OP-1 firmware permission (LICENSE,
+NOTICE, NOTICE.kennel, LICENSE.elements).

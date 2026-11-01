@@ -1,0 +1,305 @@
+/* "reverb" - fixed-point port of the Mutable Instruments Elements reverb (elements/dsp/fx/reverb.h):
+ * Griesinger topology from the Dattorro paper, 4 input allpasses (the first one smeared by an LFO) into a loop
+ * of 2 x (2 allpasses + low-pass + delay), long delay modulated by a slow LFO. Delay lengths scaled from
+ * 32 kHz to the reverb's rate so the room keeps its size. Mono: both loop outputs are summed.
+ *   knob 0 (blue)  : time       decay, 0.35 .. 0.98 loop gain (Elements: 0.35 .. 0.95)
+ *   knob 1 (green) : tone       loop low-pass 0.3 (dark) .. 0.95 (bright) (Elements: 0.7 .. 0.9)
+ *   knob 2 (white) : diffusion  allpass gain 0.5 .. 0.75 (Elements: 0.55 .. 0.7)
+ *   knob 3 (red)   : mix        dry .. wet          (green / red swapped in op1r 24)
+ * Memory: a 16 Ki int16 line (16-bit like Elements) written twice (no index masks), 86 KB of this FX position's
+ * scratch buffer.
+ * Owner-approved 2026-10-27 after the native A/B (cpu-pass): the 2026-10-16 half-rate pass 59524ff on the current 0.2 input and
+ * soft knee. Rates: the mono FX path itself runs at 22.05 kHz (after R246's 2:1 decimator), so this tank runs at
+ * 11.025 kHz (~5 kHz wet bandwidth); the delay times below assumed 44.1 kHz input. CPU (hundekraft, 2026-10-16, for a real OP-1 with a 6-voice synth in front): the reverb runs at half rate
+ * (22.05 kHz, below Elements' own 32 kHz): two input samples averaged in, the wet interpolated back linearly with a
+ * gentle high boost that makes up for both; delay lengths and LFO sweeps halved in samples (same times), loop gain
+ * and allpass gains per pass unchanged, the loop low-pass set for the same cutoff (1 - (1 - k)^2). The dry path
+ * stays at 44.1 kHz. Default wet tail within 0.3 dB of op1r's per octave up to 10 kHz (-1 dB above), RT60 the
+ * same (harness/reverb_cpu_check.py). Also: the mirrored line, delay offsets as constants, knob scaling only when
+ * a knob moves, the LFO step in 32 bits outside the sample loop. 33.8k -> 11.1k bcore packets per call.
+ * Original code (c) 2014 Emilie Gillet, MIT license. */
+#include "op1_plugin.h"
+
+#define RV_SIZE 16384
+#define RV_MASK (RV_SIZE - 1)
+#define RV_KNEE 24576
+/* Half rate (22.05 kHz). ap1..ap4, dap1a, dap1b, del1, dap2a, dap2b, del2: Elements' lengths * 22050 / 32000,
+ * 103, 148, 220, 363, 1504, 1854, 3102, 1740, 1514, 4349. Each line takes length + 1 words from its base B_i;
+ * T_i = B_i + length - 1 is its tail. Total 14907 words. */
+enum { B0 = 0, B1 = 104, B2 = 253, B3 = 474, B4 = 838, B5 = 2343, B6 = 4198, B7 = 7301, B8 = 9042, B9 = 10557,
+       T0 = 102, T1 = 251, T2 = 472, T3 = 836, T4 = 2341, T5 = 4196, T6 = 7299, T7 = 9040, T8 = 10555 };
+/* The line is written twice, at q[o] and q[o + RV_SIZE] (q = buf + wp), so a read is q[o] with no index mask:
+ * a read at q[o] lands on the copy written under the same logical index (wp + o) mod RV_SIZE. Reads stay below
+ * 2 * RV_SIZE, writes below 2 * RV_SIZE + B9 + 1 words. */
+#define RV_WORDS (2 * RV_SIZE + B9 + 1)
+
+typedef struct {
+    int16_t *buf, *mirror;                                /* mirror = buf + RV_SIZE */
+    int32_t wp;
+    int32_t lp1, lp2, wo, we;                             /* wo: the last wet sample (interpolation), we: before emphasis */
+    int32_t lfo_iir[2], lfo_y0[2], lfo_y1[2], lfo[2];    /* stmlib CosineOscillator (approximate), Q29; lfo Q15 0..1 */
+    int32_t k0, f0, k9, f9;                               /* the two LFO taps' whole and fractional offsets */
+    int16_t raw[4];                                       /* knob words the coefficients below were made from */
+    int32_t age;                                          /* blocks since then (redone every 64: the range table) */
+    int32_t krt, amount, kap, klp;
+    int32_t zn;                                           /* blocks since init while lines are still being cleared */
+    int32_t zlo[10];                                      /* lowest word already cleared per line (lazy_clear) */
+} reverb_t;
+
+static reverb_t rv[3];                                    /* synth, drum, master */
+
+/* saturate to 32 - n bits: one saturating shift and one arithmetic shift on the Blackfin, no constants */
+#ifdef OP1_HOST
+static inline int32_t satb(int32_t x, int n) { int32_t h = (int32_t)(0x7fffffff >> n); return x > h ? h : (x < -h - 1 ? -h - 1 : x); }
+#else
+#define satb(x, n) ((int32_t)__builtin_bfin_shl_fr1x32((x), (n)) >> (n))
+#endif
+/* x / 32768 truncated towards zero: >> alone biases the loop into a DC limit cycle and rounding into a
+ * low-level one, magnitude truncation lets the tail die out. Odd: t15(-x) = -t15(x) */
+static inline int32_t t15(int32_t x) { return (x + (int32_t)((uint32_t)(x >> 31) >> 17)) >> 15; }
+/* a clamped to 17 bits (-65536 .. 65535) times |b| <= 32767: fits 32 bit */
+static inline int32_t m15(int32_t a, int32_t b) { return t15(satb(a, 15) * b); }
+#define sat(x) ((int16_t)satb((x), 16))
+/* both factors fit int16: a 16 x 16 multiply (three operands, no copy) */
+#define MUL16(a, b) ((int32_t)(int16_t)(a) * (int16_t)(b))
+
+/* the LFO taps: Interpolate(line, offset + amp * lfo) in Q15, smear ap1 at 7 + 55 lfo1, del2 at 4275 + 69 lfo2 */
+static void lfo_taps(reverb_t *r)
+{
+    int32_t a = 55 * r->lfo[0], b = 69 * r->lfo[1];
+    r->k0 = B0 + 7 + (a >> 15); r->f0 = a & 32767;
+    r->k9 = B9 + 4275 + (b >> 15); r->f9 = b & 32767;
+}
+
+/* one LFO step (FxEngine: every 32 samples at 44.1 kHz, here every 16): y0' = (iir * y0 >> 29) - y1 in 32 bits.
+ * iir = 2^30 - d with d = 2262 / 815, so (iir * y) >> 29 = 2y + floor(-d y / 2^29), the product split at bit 15 */
+static void lfo_step(reverb_t *r)
+{
+    for (int k = 0; k < 2; k++) {
+        int32_t y = r->lfo_y0[k], z = -y, d = (1 << 30) - r->lfo_iir[k];
+        int32_t fl = (d * (z >> 15) + ((d * (z & 32767)) >> 15)) >> 14;
+        r->lfo_y0[k] = 2 * y + fl - r->lfo_y1[k];
+        r->lfo_y1[k] = y;
+        r->lfo[k] = (y + (1 << 28)) >> 14;
+    }
+    lfo_taps(r);
+}
+
+/* Lazy clear (2026-10-27, bursts): the init ran in the first audio callback and cleared all 43,326 words at once
+ * (~22k packets in one block). Only a word that is read before it is written needs to be zero. The write pointer wp
+ * starts at RV_SIZE - 1 and moves down one word per half-rate sample; line i is written at wp + B_i (and its copy)
+ * and read at wp + o for o in [R_i, T_i + 1] (its tail, or line 9's LFO tap from B9 + 4275), so until wp wraps
+ * (16,384 samples, 256 blocks) the words line i reads unwritten are exactly [RV_SIZE + B_i, RV_SIZE + T_i + 1],
+ * read from the top down, one word lower per sample. Each block clears the part the next 32 samples can reach
+ * (all of it is done after a line's length, at most 137 blocks), so every read sees what the full clear gave.
+ * Line 0 is cleared at init: its smear write (B0 + 69) lands in that range in the first 69 samples. The same
+ * samples as the full clear (harness/exact_check.py reverb, init on a dirty scratch and re-selected). */
+static const uint16_t rv_lo[10] = { B0, B1, B2, B3, B4, B5, B6, B7, B8, B9 };
+static const uint16_t rv_hi[10] = { T0 + 1, T1 + 1, T2 + 1, T3 + 1, T4 + 1, T5 + 1, T6 + 1, T7 + 1, T8 + 1, B9 + 4349 };
+static const uint16_t rv_rd[10] = { 0, T1, T2, T3, T4, T5, T6, T7, T8, B9 + 4275 };   /* lowest read offset */
+/* b[lo .. hi - 1] = 0, exactly those words: a halfword at an odd end, 32-bit stores for the rest (op1r 5ed5cbe's
+ * idea; the line starts 4-byte aligned and RV_SIZE is even, so an even word index is a 32-bit boundary) */
+typedef uint32_t __attribute__((may_alias)) rv_u32;
+static inline void zero_words(int16_t *b, int32_t lo, int32_t hi)
+{
+    if (lo >= hi) return;
+    if (lo & 1) b[lo++] = 0;
+    if (hi & 1) b[--hi] = 0;
+    rv_u32 *w = (rv_u32 *)(b + lo);
+    for (int32_t k = (hi - lo) >> 1; k > 0; k--) *w++ = 0;
+}
+
+static __attribute__((noinline)) void lazy_clear(reverb_t *r)   /* out of line: render keeps its registers */
+{
+    int32_t n = r->zn++, left = 0;
+    for (int i = 1; i < 10; i++) {
+        int32_t lo = RV_SIZE + rv_lo[i], z = r->zlo[i];
+        if (z <= lo) continue;
+        int32_t want = RV_SIZE - 32 - 32 * n + rv_rd[i];   /* the lowest word this block's 32 samples can read */
+        if (want < lo) want = lo;
+        zero_words(r->buf, want, z);
+        r->zlo[i] = want < z ? want : z;
+        left |= r->zlo[i] > lo;
+    }
+    if (!left) r->zn = -1;
+}
+
+static void reverb_init(int pos)
+{
+    reverb_t *r = &rv[pos % 3];
+    r->buf = (int16_t *)op1_fx_scratch(pos);
+    if (!r->buf) return;
+    zero_words(r->buf, RV_SIZE, RV_SIZE + T0 + 2);                       /* line 0 now, the rest per block */
+    for (int i = 1; i < 10; i++) r->zlo[i] = RV_SIZE + rv_hi[i] + 1;
+    r->zn = 0;
+    r->mirror = r->buf + RV_SIZE;
+    r->wp = 0; r->lp1 = r->lp2 = r->wo = r->we = 0;
+    for (int k = 0; k < 2; k++) {                          /* 0.5 Hz, 0.3 Hz, as clouds_dsp.c (stepped every 32 samples) */
+        int64_t f = ((int64_t)(k ? 3 : 5) * 32 << 29) / (10LL * 44100);
+        int64_t fr = (1LL << 27) - f;
+        r->lfo_iir[k] = (int32_t)((16 * fr * ((1LL << 29) - 2 * fr)) >> 29);
+        r->lfo_y1[k] = r->lfo_iir[k] / 4;
+        r->lfo_y0[k] = 1 << 28;
+        r->lfo[k] = (r->lfo_y1[k] + (1 << 28)) >> 14;
+    }
+    lfo_taps(r);
+    r->age = 64;
+}
+
+/* dry .. wet (wet can exceed 16 bit), soft knee above -2.5 dBFS as the full-rate version */
+static inline int32_t mixout(int32_t in, int32_t wet, int32_t amount)
+{
+    int32_t o = in + t15(in * -amount) + (((wet >> 3) * amount) >> 12);
+    int32_t ao = o < 0 ? -o : o;
+    if (ao > RV_KNEE) {
+        int32_t d = ao - RV_KNEE;
+        ao = d < 16384 ? RV_KNEE + (d >> 2) : 28672 + ((d - 16384) >> 4);
+        o = sat(o < 0 ? -ao : ao);
+    }
+    return o;
+}
+
+#define WR(o, v) do { const int16_t v_ = (v); q[o] = v_; qn[o] = v_; } while (0)
+/* allpass stage: Read(TAIL, g) then WriteAllPass(line, -g), g = +kap (AP) or -kap (APN); the tail is a buffer word
+ * (no clamp needed); t15 is odd, so the sign goes into an add or a subtract */
+#define AP(B, T) do { const int32_t prev_ = q[T]; acc += t15(MUL16(prev_, kap)); WR(B, sat(acc)); \
+                      acc = prev_ - m15(acc, kap); } while (0)
+#define APN(B, T) do { const int32_t prev_ = q[T]; acc -= t15(MUL16(prev_, kap)); WR(B, sat(acc)); \
+                       acc = prev_ + m15(acc, kap); } while (0)
+
+/* 2n samples (n at the reverb's half rate) with the LFO taps fixed; returns the peak */
+static int32_t rv_run(reverb_t *r, int16_t *buf, int n, int32_t peak)
+{
+    int16_t *const line = r->buf, *const mirror = r->mirror;  /* two bases: the copy's offsets stay immediates */
+    int32_t wp = r->wp, lp1 = r->lp1, lp2 = r->lp2, wo = r->wo, we = r->we;
+    const int32_t krt = r->krt, amount = r->amount, kap = r->kap, klp = r->klp;
+    const int32_t k0 = r->k0, f0 = r->f0, k9 = r->k9, f9 = r->f9;
+    for (int t = 0; t < 2 * n; t += 2) {
+        wp = (wp - 1) & RV_MASK;
+        int16_t *const q = line + wp, *const qn = mirror + wp;
+        int32_t in0 = buf[t], in1 = buf[t + 1], acc, apout, wet, a, b;
+        /* smear AP1 inside the loop */
+        a = q[k0]; b = q[k0 + 1];
+        WR(B0 + 69, (int16_t)(a + t15((b - a) * f0)));
+        acc = t15((in0 + in1) * 3277);                /* the two samples' mean x 0.2 as Elements (headroom) */
+        AP(B0, T0);
+        AP(B1, T1);
+        AP(B2, T2);
+        AP(B3, T3);
+        apout = acc;
+        /* loop half 1 */
+        a = q[k9]; b = q[k9 + 1];
+        acc = apout + t15((a + t15((b - a) * f9)) * krt);
+        lp1 += m15(acc - lp1, klp); acc = lp1;
+        APN(B4, T4);
+        AP(B5, T5);
+        WR(B6, sat(acc));
+        wet = acc;                                                     /* Write(del1, 2.0): *2, halved below */
+        /* loop half 2 */
+        acc = apout + t15(q[T6] * krt);
+        lp2 += m15(acc - lp2, klp); acc = lp2;
+        AP(B7, T7);
+        APN(B8, T8);
+        WR(B9, sat(acc));
+        wet = (wet + acc) * 5;                                         /* mono: 2 L + 2 R, makeup for the 0.2 input */
+        /* + 1/4 of the change: a gentle high boost (+1.5 dB at 5 kHz, +3.5 dB at 11 kHz) that makes up for the
+         * two-sample mean in and the linear interpolation out, which together lose that much */
+        a = wet; wet += (wet - we) >> 2; we = a;
+        /* back to 44.1 kHz: linear interpolation (half way, then the new sample) */
+        int32_t o0 = mixout(in0, (wo + wet) >> 1, amount), o1 = mixout(in1, wet, amount);
+        wo = wet;
+        buf[t] = (int16_t)o0; buf[t + 1] = (int16_t)o1;
+        if (o0 < 0) o0 = -o0;
+        if (o1 < 0) o1 = -o1;
+        if (o1 > o0) o0 = o1;
+        if (o0 > peak) peak = o0;
+    }
+    r->wp = wp; r->lp1 = lp1; r->lp2 = lp2; r->wo = wo; r->we = we;
+    return peak;
+}
+
+static void reverb_render(int pos, int16_t *buf, const int16_t *p)
+{
+    reverb_t *r = &rv[pos % 3];
+    if (!r->buf) return;
+    if (++r->age >= 64 || p[0] != r->raw[0] || p[1] != r->raw[1] || p[2] != r->raw[2] || p[3] != r->raw[3]) {
+        for (int i = 0; i < 4; i++) r->raw[i] = p[i];
+        r->age = 0;
+        r->krt = 11469 + (op1_fx_param_q15(p, 0) * 20644 >> 15);      /* 0.35 .. 0.98 per loop pass */
+        r->amount = op1_fx_param_q15(p, 3);
+        r->kap = 16384 + (op1_fx_param_q15(p, 2) * 8192 >> 15);       /* 0.5 .. 0.75 */
+        int32_t k = 9830 + (op1_fx_param_q15(p, 1) * 21299 >> 15);    /* 0.3 .. 0.95 at 44.1 kHz */
+        r->klp = 32768 - (((32768 - k) * (32768 - k)) >> 15);           /* the same cutoff at half rate: 1 - (1 - k)^2 */
+    }
+    if (r->zn >= 0) lazy_clear(r);
+    int32_t peak = rv_run(r, buf, OP1_FX_BLOCK / 4, 0);               /* LFO stepped every 32 samples */
+    lfo_step(r);
+    peak = rv_run(r, buf + OP1_FX_BLOCK / 2, OP1_FX_BLOCK / 4, peak);
+    lfo_step(r);
+    volatile int16_t *m = op1_fx_meter(pos);
+    int32_t mv = (*m * 0xfe00) >> 16;
+    *m = (int16_t)(peak > mv ? peak : mv);
+}
+
+const op1_fx_t FX_reverb = { reverb_init, reverb_render };
+
+/* ======================= screen (GUI thread) =======================
+ * display/kalireverb.svg (Kali artwork, display/gen_kali_svg.py from display/src/kali-reverb.svg). Knobs as the
+ * stock screens see them (op1_fx_knobs_live):
+ *   blue  (time)      1..6 arms visible (karm1..6: lower pair first, then middle, then upper) + TIME needle
+ *   green (tone)      fire ring and flames fade in (below 10 % hidden, then 30 .. 100 %) + TONE needle (green)
+ *   white (diffusion) brightness of the skull necklace (30 .. 100 %) + DIFFUSION needle
+ *   red   (mix)       lights 0..10 lines of the right-hand scale from the bottom (kmix9 = bottom) in red
+ * Only group visibility (node +0x50), the skull / fire style colours and needle rotations change; no raster lines. */
+#include "kali_geom.h"
+static void *k_arm[6], *k_skull, *k_fire, *k_mix[KALI_MIX_LINES], *k_needle[3];
+static uint8_t *k_skc[KALI_NSKULL], *k_fic[KALI_NFIRE];               /* their style colours (RGBA) */
+
+static void kali_screen_init(void *scr)
+{
+    char id[8] = { 'k', 0 };
+    for (int i = 0; i < 6; i++) { id[1] = 'a'; id[2] = 'r'; id[3] = 'm'; id[4] = (char)('1' + i); id[5] = 0; k_arm[i] = op1_find_node(scr, id); }
+    k_skull = op1_find_node(scr, "kskull"); k_fire = op1_find_node(scr, "kfire");
+    for (int i = 0; i < KALI_NSKULL; i++) {                            /* ks0..ks13 */
+        char a[5] = { 'k', 's', (char)(i < 10 ? '0' + i : '1'), (char)(i < 10 ? 0 : '0' + i - 10), 0 };
+        k_skc[i] = kali_skull_kind[i] == 'f' ? op1_node_fill_rgba(scr, a) : op1_node_line_rgba(scr, a);
+    }
+    for (int i = 0; i < KALI_NFIRE; i++) {
+        char a[4] = { 'k', 'f', (char)('0' + i), 0 };
+        k_fic[i] = kali_fire_kind[i] == 'f' ? op1_node_fill_rgba(scr, a) : op1_node_line_rgba(scr, a);
+    }
+    for (int i = 0; i < KALI_MIX_LINES; i++) { char m[6] = { 'k', 'm', 'i', 'x', (char)('0' + i), 0 }; k_mix[i] = op1_find_node(scr, m); }
+    k_needle[0] = op1_find_node(scr, "ktime"); k_needle[1] = op1_find_node(scr, "kdiff"); k_needle[2] = op1_find_node(scr, "ktone");
+}
+
+static void tint(uint8_t *const *c, int n, const uint8_t *rgb, int32_t l)   /* l 0..256 */
+{
+    for (int i = 0; i < n; i++) if (c[i]) { c[i][0] = (uint8_t)(rgb[0] * l >> 8); c[i][1] = (uint8_t)(rgb[1] * l >> 8); c[i][2] = (uint8_t)(rgb[2] * l >> 8); }
+}
+
+static void kali_screen_update(void *scr, int dt)
+{
+    int16_t k[4];
+    op1_fx_knobs_live(k);
+    int arms = 1 + (k[0] * 5 + 16383) / 32767;                         /* 1..6 */
+    for (int i = 0; i < 6; i++) if (k_arm[i]) op1_node_set_visible(k_arm[i], i < arms);
+    int lit = (k[3] * KALI_MIX_LINES + 16383) / 32767;                 /* 0..10 lines, from the bottom */
+    for (int i = 0; i < KALI_MIX_LINES; i++) if (k_mix[i]) op1_node_set_visible(k_mix[i], i >= KALI_MIX_LINES - lit);
+    /* skulls 30 .. 100 % by the white knob, fire hidden at 0 then 30 .. 100 % by the green knob (one copy each,
+     * recoloured; was 5 copies at fixed levels) */
+    static const uint8_t white[3] = { 0xFF, 0xFF, 0xFF }, red[3] = { 0xFF, 0x3A, 0x5D };
+    tint(k_skc, KALI_NSKULL, white, 77 + (k[2] * 179 >> 15));
+    int fire_on = k[1] > 3276;                                         /* below 10 %: no fire (as before: level 0) */
+    if (k_fire) op1_node_set_visible(k_fire, fire_on);
+    if (fire_on) tint(k_fic, KALI_NFIRE, red, 77 + ((k[1] - 3276) * 199 >> 15));
+    (void)k_skull;
+    static const int32_t px[3] = { KALI_TIME_X, KALI_DIFF_X, KALI_TONE_X }, py[3] = { KALI_TIME_Y, KALI_DIFF_Y, KALI_TONE_Y };
+    static const uint8_t kn[3] = { 0, 2, 1 };                          /* time blue, diffusion white, tone green */
+    for (int i = 0; i < 3; i++) if (k_needle[i]) {                     /* needle points left at 0, right at max */
+        int32_t a = k[kn[i]] * 4096 >> 15;                             /* 0..180 deg (8192 = full turn) */
+        op1_node_rotate(k_needle[i], px[i], py[i], OP1_SINE_TABLE[a & 8191], OP1_SINE_TABLE[(a + 2048) & 8191]);
+    }
+    op1_screen_draw(scr, dt);
+}
+
+const op1_screen_t SCREEN_reverb = { kali_screen_init, kali_screen_update };

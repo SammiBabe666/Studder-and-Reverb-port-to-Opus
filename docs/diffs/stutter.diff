@@ -1,0 +1,449 @@
+--- hundekraft-3.1.1/plugins/stutter/stutter.c
++++ sammi.stutter/stutter.c
+@@ -1,22 +1,43 @@
+-/* STUTTER: a beat-locked stutter. The OP-1's beat clock (op1_beat_clock, the metronome's) cuts time into slices;
+- * at each slice a dice roll decides whether the slice plays through or stutters: its first part is played and
+- * recorded, then repeated until the slice ends, so the repeats always land on the grid.
+- *   blue   RATE     slice length: 1/4, 1/8, 1/8 triplet, 1/16, 1/16 triplet, 1/32 of a beat ... (6 steps)
++/* sammi.stutter: Hundekraft's STUTTER effect (Hundekraft OP-1 Workshop 3.1.1, ext/kennel/synth_sdk/plugins/stutter/
++ * stutter.c) as a native Opus 2 effect type ("hkstutter") for the synth, the drum and the master.
++ *
++ * A beat-locked stutter, Hundekraft's code: the OP-1's beat clock (the metronome's) cuts time into slices; at each
++ * slice a dice roll decides whether the slice plays through or stutters: its first part is played and recorded, then
++ * repeated until the slice ends, so the repeats always land on the grid.
++ *   blue   RATE     slice length: 1/4, 1/8, 1/8 triplet, 1/16, 1/16 triplet, 1/32 of a beat (6 steps)
+  *   green  MODE     REPEAT (plain), BRAKE (each repeat slower and lower, a tape stop), REVERSE (repeats backwards),
+  *                   GATE (no repeats: the slice is chopped into short bursts of the live sound)
+  *   white  SHAPE    edge softness of each repeat (2 .. 12 ms fades); in GATE the open time (10 .. 90 %)
+- *   red    CHANCE   how many slices stutter: none .. all
+- * Page 2 / press:
+- *   blue   word 5   REPEATS: how many parts a stuttering slice is cut into: 2, 3, 4, 6, 8, 16
+- *   red    latch    FREEZE: keep repeating the part playing now, across slices, until pressed again
+- * With no clock (tape stopped while it follows the tape, or no tempo yet) the grid runs on at 120 BPM.
+- * Ring buffer: 65536 samples (1.49 s) of the position's FX scratch; a slice longer than that (1/4 under 40 BPM)
+- * is cut short. While frozen the ring keeps the frozen part (nothing new is recorded). State per FX position 0..2. On the master the dispatcher feeds a mono sum and adds the
+- * difference to both sides, so a stutter there repeats the mid signal over the live sides.
+- * Copyright (C) 2026 Hundekraft. GPL-3.0-or-later with the OP-1 firmware permission (see LICENSE and NOTICE).
+- */
+-#include "op1_plugin.h"
++ *   orange CHANCE   how many slices stutter: none .. all
++ *   shift + blue    REPEATS: how many parts a stuttering slice is cut into: 2, 3, 4, 6, 8, 16 (parameter 5, saved
++ *                   with the sound; one step a detent, round and round as kennel's page-2 word went)
++ *   shift + orange  FREEZE: clockwise on, anticlockwise off: keep repeating the part playing now, across slices
++ * With no clock (the tape stopped while it follows the tape, or no tempo yet) the grid runs on at 120 BPM.
++ * Ring buffer: 65536 samples (1.49 s); a slice longer than that (1/4 under 40 BPM) is cut short. While frozen the ring
++ * keeps the frozen part. On the master: a mono sum, the difference added to both sides, as kennel's dispatcher did.
++ *
++ * What this port changes (GPL-3.0 section 5: modified 2026-11-01 by sammi), and nothing else:
++ *   - the state lives in the instance's memory (struct opus_fx: state, and the ring in bulk), not in a static array
++ *     per kennel FX position and op1_fx_scratch(pos);
++ *   - parameters arrive as 0 .. 32767 (this type's limits), so kennel's op1_fx_param_q15 is a clamp; the defaults are
++ *     kennel's plugin.json knob positions (and its page-2 default for word 5);
++ *   - kennel's encoder presses become the Opus effect type's shift layer (Opus has no press handler for an effect
++ *     type): blue's page 2 (REPEATS, word 5) is shift + blue, orange's latch (FREEZE) shift + orange. As on kennel,
++ *     FREEZE is kept per effect position (synth, drum, master) and is not saved with the sound;
++ *   - init clears the ring as kennel's does (128 KB in 32-bit stores; kennel did it in the audio callback, an Opus init
++ *     may run in the audio interrupt too); it also resets rec, which kennel left to its zeroed statics;
++ *   - the master: kennel's mono-sum routing, here in stereo();
++ *   - the peak meter word and the OS SVG screen: the Opus effect page instead (view): the four values, the last 16
++ *     slices as kennel's projected picture drew them, and REPEATS and FREEZE in the caption;
++ *   - the beat clock is read where kennel's op1_beat_clock reads it (deep, read-only: see beat_clock below).
++ *
++ * Copyright (C) 2026 Hundekraft. GPL-3.0-or-later with the OP-1 firmware permission. This port: GPL-3.0-or-later with
++ * the same permission (see the repository's LICENSE and NOTICE). */
++#include <stdint.h>
++#include "opus_plugin.h"
++#include "op1fw.h"
+ 
++#define OP1_FX_BLOCK 64
+ #define NBUF 65536
+ #define MASK (NBUF - 1)
+ #define HIST 16
+@@ -25,11 +46,39 @@
+ static const uint8_t DIVS[6] = { 1, 2, 3, 4, 6, 8 };          /* slices per beat */
+ static const uint8_t REPS[6] = { 2, 3, 4, 6, 8, 16 };
+ 
++/* ---- the beat clock (kennel's op1_beat_clock; read once per block, never per sample) ----
++ * The stock metronome's beat clock (metronome.cpp state at 0x01AADABC, firmware #246, as kennel's SDK documents it).
++ * It runs whether the metronome is heard or not, at the OP-1 tempo (BPM setting or MIDI clock), restarts on a beat
++ * when the tape starts and, while it follows the tape, moves with the tape speed. Opus 2 has no tempo service, so
++ * this is a deep read: only read, never written. Times in 1/16384 samples: beat length = 2646000 / BPM * 16384. */
++typedef struct {
++    int32_t len;            /* beat length, 1/16384 samples (<= 0: no clock yet) */
++    int32_t next;           /* time to the next beat from the first sample of this block, 1/16384 samples */
++    int32_t step;           /* clock advance per 64-sample block: 0x100000 = real time, else the tape speed */
++    int32_t tape_pos;       /* tape position (samples) */
++    uint8_t follows_tape;   /* 1: the clock moves with the tape */
++} op1_beat_t;
++#ifdef STUTTER_HOST
++extern op1_beat_t host_beat;                                   /* tests/host sets it */
++static inline void beat_clock(op1_beat_t *b) { *b = host_beat; }
++#else
++static inline void beat_clock(op1_beat_t *b)
++{
++    const volatile uint8_t *m = (const volatile uint8_t *)0x01AADABC;
++    b->len = *(const volatile int32_t *)(m + 0x1C);
++    b->next = *(const volatile int32_t *)(m + 0x20);
++    b->follows_tape = m[0x14];
++    uint32_t sp = *(const volatile uint32_t *)0xFF802970;       /* tape speed: phase step (sp >> 21) << 14 */
++    b->step = b->follows_tape ? (int32_t)((sp >> 21) << 14) : 0x100000;
++    b->tape_pos = *(const volatile int32_t *)0xFF802974 >> 6;  /* 1/64 samples */
++}
++#endif
++
+ typedef struct {
+     uint32_t w;                     /* write index into the ring */
+     int32_t bp;                     /* free-running beat phase (no clock), 1/16384 samples to the next beat */
+     int32_t pos, len, sub;          /* sample in the slice, slice length, part length */
+-    int32_t ps, part;               /* sample in the part, part number (counted, no division per sample) */
++    int32_t ps, part;               /* sample in the part, part number */
+     uint32_t start;                 /* ring index of the slice start (the recorded part) */
+     uint8_t stut, mode, faded;      /* this slice stutters; its mode; the last slice ended faded out */
+     int32_t fade, finc, duty;       /* fade samples, 32768 / fade, gate open samples per part */
+@@ -42,42 +91,37 @@
+     int32_t slice;                  /* slice number in the beat */
+     uint32_t hist;                  /* stutter flags of the last HIST slices, bit 0 = newest */
+     uint8_t ndiv, reps;
++    uint8_t seeded;                 /* this port: the instance learnt its position (the dice's seed) */
+ } st_t;
+ 
+-static st_t st[3];
+-static volatile uint32_t sx_blocks[3];
++/* kennel's op1_fx_page[pos][3]: FREEZE per effect position (0 synth, 1 drum, 2 master); the key thread writes it
++ * (shift + orange), the audio reads it. Not saved, as kennel's latch. */
++static volatile uint8_t freeze_latch[3];
++/* what the page shows of the position's instance (kennel's screen read st[pos]); the audio writes, the display reads */
++static volatile struct { int32_t slice; uint32_t hist; uint8_t frozen, mode; } shown[3];
+ 
+-/* Shared by audio, stepped rings and labels. */
+-static unsigned sx_range(int32_t q,unsigned count) { unsigned v=(unsigned)(q<0?0:q); unsigned n=v*count>>15; return n<count?n:count-1; }
++static unsigned sx_range(int32_t q, unsigned count) { unsigned v = (unsigned)(q < 0 ? 0 : q); unsigned n = v * count >> 15; return n < count ? n : count - 1; }
+ static unsigned sx_select(int32_t q, unsigned count) { return ((unsigned)(q < 0 ? 0 : q) >> 9) % count; }
+-static inline int32_t q15(const int16_t *p, int i) { return op1_fx_param_q15(p, i); }
++static inline int32_t q15(const int16_t *p, int i) { return p[i] < 0 ? 0 : p[i]; }   /* this type's params: 0..32767 */
+ static inline uint32_t lcg(uint32_t *s) { return *s = *s * 1664525u + 1013904223u; }
+ 
+-#ifdef FX_SPREAD_INIT
+-#include "fx_spread.h"
+-static fx_spread_t sx_spread[3];
+-#endif
+-static void sx_init(int pos)
++/* kennel's sx_init(pos): the state, and the ring cleared at once with 32-bit stores, as kennel does it (without its
++ * FX_SPREAD_INIT option). The clear is heard: REVERSE while frozen reads the part's end before it is recorded, which is
++ * silence after a clear. rec is also reset (kennel's state started zeroed; it is only read once a freeze sets it). */
++static void sx_reset(st_t *s, int pos, int16_t *ring)
+ {
+-    pos %= 3;
+-    st_t *s = &st[pos];
+     s->w = 0; s->bp = -1; s->pos = 0; s->len = 0; s->sub = 1; s->start = 0; s->stut = 0; s->faded = 0;
+-    s->gin = 0; s->latch = op1_fx_page[pos][3]; s->frozen = 0;
++    s->gin = 0; s->latch = freeze_latch[pos]; s->frozen = 0; s->rec = 0;
+     s->rng = 0x2545F491u + (uint32_t)pos * 0x9E3779B9u;
+     s->slice = 0; s->hist = 0;
+-    int16_t *buf = (int16_t *)op1_fx_scratch(pos);
+-#ifdef FX_SPREAD_INIT                                         /* cleared per block, dry meanwhile (fx_spread.h) */
+-    fx_spread_start(&sx_spread[pos], buf, NBUF / 2);
+-#else
+-    if (buf) for (int i = 0; i < NBUF / 2; i++) ((uint32_t *)(void *)buf)[i] = 0;   /* audio callback: 32-bit clear */
+-#endif
++    if (ring) for (int i = 0; i < NBUF / 2; i++) ((uint32_t *)(void *)ring)[i] = 0;
+ }
+ 
+ /* the next grid point in this block: its sample 0..63 or -1; *len = slice length (samples, real time) */
+ static int grid(st_t *s, int div, int32_t *slen)
+ {
+     op1_beat_t c;
+-    op1_beat_clock(&c);
++    beat_clock(&c);
+     int32_t len = c.len, p, step;
+     const int moving = len >= (256 << 14) && c.step > 0 && c.step <= 0x400000 && c.next >= 0 && c.next <= len;
+     if (len < (256 << 14)) len = 22050 << 14;                                /* no clock: 120 BPM */
+@@ -104,7 +148,7 @@
+     const int32_t shape = q15(p, 2);
+     const int32_t w5 = p[5] < 0 ? 0 : p[5];
+     const int reps = REPS[sx_select(w5, 6)];
+-    const int frz = op1_fx_page[pos][3] != 0;
++    const int frz = freeze_latch[pos] != 0;
+     if (slen > NBUF - 64) slen = NBUF - 64;
+     if (slen < 64) slen = 64;
+     s->len = slen;
+@@ -179,15 +223,11 @@
+     }
+ }
+ 
+-static void sx_render(int pos, int16_t *buf, const int16_t *p)
++/* kennel's sx_render(pos, buf, p) on the instance's state and ring */
++static void sx_render(st_t *s, int16_t *ring, int pos, int16_t *buf, const int16_t *p)
+ {
+-    pos %= 3;
+-    st_t *s = &st[pos];
+-    int16_t *ring = (int16_t *)op1_fx_scratch(pos);
+     if (!ring) return;
+-#ifdef FX_SPREAD_INIT
+-    if (fx_spread_step(&sx_spread[pos])) return;
+-#endif
++    if (!s->seeded) { s->rng = 0x2545F491u + (uint32_t)pos * 0x9E3779B9u; s->latch = freeze_latch[pos]; s->seeded = 1; }
+     const int div = DIVS[sx_range(q15(p, 0), 6)];
+     s->ndiv = (uint8_t)div;
+     int32_t slen;
+@@ -201,125 +241,150 @@
+         slice_start(s, slen, p, pos);
+         run(s, buf, ring, off, OP1_FX_BLOCK);
+     }
+-    int32_t pk = 0;
+-    for (int i = 0; i < OP1_FX_BLOCK; i++) { const int32_t a = buf[i] < 0 ? -buf[i] : buf[i]; if (a > pk) pk = a; }
+-    volatile int16_t *m = op1_fx_meter(pos);
+-    const int32_t mv = (*m * 0xfe00) >> 16;
+-    *m = (int16_t)(pk > mv ? pk : mv);
+-    sx_blocks[pos]++;
+-}
+-
+-const op1_fx_t FX_stutter = { sx_init, sx_render, { OP1_PRESS_PAGE, OP1_PRESS_NONE, OP1_PRESS_NONE, OP1_PRESS_LATCH } };
+-
+-/* ======================= screen (GUI thread) =======================
+- * stutter.svg and stutter_geom.h (OP1-Emulator docs/design/engine-screens/night/build_night2.py): a film projector
+- * traced from the night concept, its reel a node (reel), and four knob readouts in the corners (label, dim ring
+- * track; no slider bars, owner). Drawn here:
+- *   the knob rings: value arc, pointer and knob face in the knob's colour, for RATE (blue, 6 steps), SHAPE (white),
+- *     MODE (green, 4 steps) and CHANCE (red), as the effect hears them (op1_fx_knobs_live: LFO included); with the
+- *     blue press (page 2) the RATE ring shows PARTS (2 .. 16, 6 steps); while a part is frozen the CHANCE ring gets a
+- *     lit inner ring (FREEZE)
+- *   the projected picture: the last 16 slices, newest at the right (white); a slice that stuttered is a tall bar
+- *     (REPEAT full, BRAKE stepping down, REVERSE slanted, GATE dashed), one that played through a short one
+- *   the reel turns a slice's share of a turn at each slice of the beat (its spokes tick with RATE's grid) */
+-#include "stutter_geom.h"
+-#pragma GCC push_options
+-#pragma GCC optimize("Os")                             /* GUI code: size, not speed */
+-#define QS(v) ((int32_t)((v) * 1024))
+-static const uint8_t S_BLUE[4] = { 0x69, 0x8E, 0xFF, 0xFF }, S_GREEN[4] = { 0x00, 0xED, 0x95, 0xFF },
+-                     S_WHITE[4] = { 0xFF, 0xFF, 0xFF, 0xFF }, S_RED[4] = { 0xFF, 0x3A, 0x5D, 0xFF };
+-static void *sx_reel;
+-static int32_t sx_angle;                                     /* reel angle, 8192 a turn, eased toward the target */
+-
+-static void sl(void *r, int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t w, const uint8_t *c)
+-{
+-    const op1_pt a = { x0, y0 }, b = { x1, y1 };
+-    op1_raster_line(r, &a, &b, w, c);
+-}
+-
+-/* point on a circle, angle a (8192 a turn, 0 = right, y down) */
+-static void on_circle(int32_t cx, int32_t cy, int32_t rad, int32_t a, int32_t *x, int32_t *y)
+-{
+-    *x = cx + ((rad * OP1_SINE_TABLE[(a + 2048) & 8191]) >> 15);
+-    *y = cy + ((rad * OP1_SINE_TABLE[a & 8191]) >> 15);
+-}
+-
+-/* a knob ring: arc from 135 degrees (lower left) over the top to 45 degrees (lower right), 270 degrees for v 0..32767 */
+-static void ring(void *r, int32_t cx, int32_t cy, int32_t v, const uint8_t *c)
+-{
+-    const int32_t a0 = 3072, a1 = a0 + (int32_t)(((int64_t)v * 6144) >> 15);
+-    int32_t px, py, x, y;
+-    on_circle(cx, cy, SX_RING_R, a0, &px, &py);
+-    for (int32_t a = a0 + 256; a <= a1; a += 256) {
+-        on_circle(cx, cy, SX_RING_R, a, &x, &y);
+-        sl(r, px, py, x, y, 0x800, c);
+-        px = x; py = y;
+-    }
+-    on_circle(cx, cy, (SX_RING_R * 3) >> 2, 0, &px, &py);     /* the knob face */
+-    for (int32_t a = 512; a <= 8192; a += 512) {
+-        on_circle(cx, cy, (SX_RING_R * 3) >> 2, a, &x, &y);
+-        sl(r, px, py, x, y, 0x700, c);
+-        px = x; py = y;
++    shown[pos].slice = s->slice;
++    shown[pos].hist = s->hist;
++    shown[pos].frozen = s->frozen;
++    shown[pos].mode = s->mode;
++}
++
++/* ======================= the Opus effect type ======================= */
++
++static void need(int stereo, struct opus_need *n)
++{
++    (void)stereo;
++    n->state = sizeof(st_t);
++    n->bulk = NBUF * sizeof(int16_t);                      /* 131,072 bytes: the ring */
++    n->fast = 0;
++}
++
++/* The core calls init at every factory call (a sound loading, the instrument or the slot changing), in a thread or
++ * the audio interrupt; which position it is for is learnt at the first block (the dice's seed is the position's, as
++ * kennel's), so it resets with position 0's and the first render reseeds. */
++static void init(struct opus_fx *fx)
++{
++    st_t *s = (st_t *)fx->state;
++    const int pos = fx->stereo ? 2 : 0;
++    sx_reset(s, pos, (int16_t *)fx->bulk);
++    s->seeded = (uint8_t)fx->stereo;                       /* the master's position is known now */
++}
++
++static void mono(struct opus_fx *fx, short *buf, const short *par)
++{
++    const int pos = opus_instrument_now() == 1 ? 1 : 0;   /* the instrument this block plays: 0 synth, 1 drum */
++    sx_render((st_t *)fx->state, (int16_t *)fx->bulk, pos, buf, par);
++}
++
++/* the master, as kennel's dispatcher ran a mono effect there: on m = (L + R) / 2, its change added to both sides */
++static void stereo(struct opus_fx *fx, short *l, short *r, const short *par)
++{
++    int16_t m[OP1_FX_BLOCK], y[OP1_FX_BLOCK];
++    for (int i = 0; i < OP1_FX_BLOCK; i++) y[i] = m[i] = (int16_t)((l[i] + r[i]) >> 1);
++    sx_render((st_t *)fx->state, (int16_t *)fx->bulk, 2, y, par);
++    for (int i = 0; i < OP1_FX_BLOCK; i++) {
++        const int32_t d = y[i] - m[i];
++        const int32_t a = l[i] + d, b = r[i] + d;
++        l[i] = (short)(a > 32767 ? 32767 : (a < -32768 ? -32768 : a));
++        r[i] = (short)(b > 32767 ? 32767 : (b < -32768 ? -32768 : b));
+     }
+-    on_circle(cx, cy, (SX_RING_R * 5) >> 3, a1, &x, &y);      /* the pointer */
+-    sl(r, cx, cy, x, y, 0x800, c);
+ }
+ 
+-static void sx_screen_init(void *scr) { sx_reel = op1_find_node(scr, "reel"); }
++/* the effect page's owner (0-7 the synth's slots, 8-15 the drum's, 16 the master) as a kennel FX position */
++static int page_pos(void)
++{
++    const int o = opus_fx_owner();
++    return o >= 16 ? 2 : (o >= 8 ? 1 : 0);
++}
+ 
+-static void sx_screen_update(void *scr, int dt)
++/* The shift layer: shift + blue REPEATS, one step a detent (cyclic, as kennel's page word read through % 6);
++ * shift + orange FREEZE (clockwise on, anticlockwise off). Green and white keep the OS's fine steps. */
++static int shift_knob(short *par, int encoder, int detents)
+ {
+-    const int pos = op1_fx_screen_pos() % 3;
+-    const st_t *s = &st[pos];
+-    int16_t kn[4];
+-    op1_fx_knobs_live(kn);
+-    int32_t k[4];
+-    for (int i = 0; i < 4; i++) k[i] = kn[i] < 0 ? 0 : kn[i];
+-    const int32_t w5 = op1_fx_knobs(pos)[5] < 0 ? 0 : op1_fx_knobs(pos)[5];
+-    const int ri = sx_range(k[0], 6), mi = sx_range(k[1], 4);
+-
+-    /* the reel: a slice's share of a turn per slice, eased */
+-    const int div = DIVS[ri];
+-    const int32_t target = (s->slice % div) * (8192 / div);
+-    sx_angle += ((((target - sx_angle) + 4096) & 8191) - 4096) >> 2;
+-    op1_node_rotate(sx_reel, SX_REEL_X, SX_REEL_Y, OP1_SINE_TABLE[sx_angle & 8191], OP1_SINE_TABLE[(sx_angle + 2048) & 8191]);
+-    op1_screen_draw_cached(scr, dt, sx_reel);
+-    void *r = op1_raster();
+-
+-    /* the rings (RATE / PARTS and MODE in steps); FREEZE as a lit inner ring on CHANCE */
+-    const int pi = sx_select(w5, 6);
+-    ring(r, SX_RING0_X, SX_RING0_Y, (op1_fx_page[pos][0] ? pi : ri) * 32767 / 5, S_BLUE);
+-    ring(r, SX_RING1_X, SX_RING1_Y, k[2], S_WHITE);
+-    ring(r, SX_RING2_X, SX_RING2_Y, mi * 32767 / 3, S_GREEN);
+-    ring(r, SX_RING3_X, SX_RING3_Y, k[3], S_RED);
+-    if (s->frozen) {
+-        int32_t px, py, x, y;
+-        on_circle(SX_RING3_X, SX_RING3_Y, SX_RING_R >> 1, 0, &px, &py);
+-        for (int32_t a = 1024; a <= 8192; a += 1024) {
+-            on_circle(SX_RING3_X, SX_RING3_Y, SX_RING_R >> 1, a, &x, &y);
+-            sl(r, px, py, x, y, 0x700, S_WHITE);
+-            px = x; py = y;
+-        }
++    if (encoder == 0) {
++        int i = (int)sx_select(par[5], 6) + detents % 6;
++        i = ((i % 6) + 6) % 6;
++        par[5] = (short)(i * 512 + 256);                  /* the middle of step i in kennel's (word >> 9) % 6 */
++        return 1;
+     }
++    if (encoder == 3) {
++        if (detents > 0) freeze_latch[page_pos()] = 1;
++        else if (detents < 0) freeze_latch[page_pos()] = 0;
++        return 1;
++    }
++    return 0;
++}
+ 
+-    /* the picture: 16 slices */
+-    const int32_t cw = (SX_PIC_X1 - SX_PIC_X0) / HIST, top = SX_PIC_Y0 + QS(3), bot = SX_PIC_Y1 - QS(2);
++/* Its page, in the encoders' order (blue top left, green bottom left, white top right, orange bottom right):
++ * rate, mode, shape (fade ms, or the gate's open time) and chance; the picture is kennel's projected one, the last 16
++ * slices, newest at the right: a slice that stuttered is a tall bar (REPEAT full, BRAKE stepping down, REVERSE
++ * slanted, GATE dashed), one that played through a short one; the caption says REPEATS and FREEZE. */
++static void view(const short *par, struct opus_fx_view *v)
++{
++    static const char *const label[4] = { "rate", "mode", "shape", "chance" };
++    static const char *const rates[6] = { "1/4", "1/8", "1/8t", "1/16", "1/16t", "1/32" };
++    static const char *const modes[4] = { "repeat", "brake", "reverse", "gate" };
++    static char value[4][12];
++    static char caption[32];
++    static short wave[OPUS_FX_WAVE];
++    const int pos = page_pos();
++    const int ri = (int)sx_range(q15(par, 0), 6), mi = (int)sx_range(q15(par, 1), 4);
++    const int32_t shape = q15(par, 2);
++    fw_snprintf(value[0], 12, "%s", rates[ri]);
++    fw_snprintf(value[1], 12, "%s", modes[mi]);
++    if (mi == M_GATE)
++        fw_snprintf(value[2], 12, "%i%%", (int)((3277 + ((shape * 26214) >> 15)) * 100 >> 15));
++    else
++        fw_snprintf(value[2], 12, "%i ms", (int)(((88 + ((shape * 441) >> 15)) * 10 + 220) / 441));   /* 2 .. 12 */
++    fw_snprintf(value[3], 12, "%i%%", (int)(q15(par, 3) * 100 / 32767));
++    const uint32_t hist = shown[pos].hist;
++    const int frozen = shown[pos].frozen || freeze_latch[pos];
++    fw_snprintf(caption, 32, frozen ? "%i parts  freeze" : "%i parts", REPS[sx_select(par[5], 6)]);
++    /* 16 slices x 8 points: a stuttered slice's bar fills points 1-6, a played-through one a short stub */
+     for (int c = 0; c < HIST; c++) {
+-        const int on = (s->hist >> (HIST - 1 - c)) & 1;
+-        const uint8_t *col = c == HIST - 1 ? S_WHITE : S_GREEN;
+-        const int32_t x = SX_PIC_X0 + cw * c + cw / 2;
+-        if (!on) { sl(r, x, bot - QS(3), x, bot, 0x500, col); continue; }
+-        if (mi == M_GATE) {
+-            for (int32_t y = top; y < bot; y += QS(5)) sl(r, x, y, x, y + QS(2.5), 0x500, col);
+-        } else if (mi == M_REVERSE) {
+-            sl(r, x + QS(0.8), top, x - QS(0.8), bot, 0x500, col);
+-        } else if (mi == M_BRAKE) {
+-            sl(r, x, top + ((c & 3) * QS(5)), x, bot, 0x500, col);
+-        } else {
+-            sl(r, x, top, x, bot, 0x500, col);
++        const int on = (hist >> (HIST - 1 - c)) & 1;
++        for (int k = 0; k < 8; k++) {
++            int32_t y = 0;
++            if (k >= 1 && k <= 6) {
++                if (!on) y = k == 3 || k == 4 ? 6000 : 0;
++                else if (mi == M_GATE) y = (k & 1) ? 26000 : 0;
++                else if (mi == M_REVERSE) y = 30000 - (k - 1) * 4800;
++                else if (mi == M_BRAKE) y = 26000 - (c & 3) * 5000;
++                else y = 26000;
++            }
++            wave[c * 8 + k] = (short)y;
+         }
+     }
++    for (int i = 0; i < 4; i++) { v->label[i] = label[i]; v->value[i] = value[i]; }
++    v->wave[0] = wave;
++    v->waves = 1;
++    v->caption = caption;
+ }
+-#pragma GCC pop_options
+ 
+-const op1_screen_t SCREEN_stutter = { sx_screen_init, sx_screen_update };
++/* kennel's plugin.json defaults (knob positions 0..32767): rate 17152 (1/16), mode 2304 (repeat), shape 8000, chance
++ * 12000; its page-2 default for word 5, 13568 (4 parts). One detent turns a knob 1024 (step 8192 = 1024 x 8, as the
++ * starter pack's rows). Parameter 5 is turned by the shift layer only (step 0: no encoder or LFO moves it). */
++static const struct opus_effect STUTTER = {
++    .size = sizeof(struct opus_effect),
++    .name = "hkstutter",
++    .defaults = { 17152, 2304, 8000, 12000, 0, 13568, 0, 0 },
++    .limits = { { 0, 32767, 8192 }, { 0, 32767, 8192 }, { 0, 32767, 8192 }, { 0, 32767, 8192 },
++                { 0, 32767, 0 }, { 0, 32767, 0 }, { 0, 32767, 0 }, { 0, 32767, 0 } },
++    .need = need,
++    .init = init,
++    .mono = mono,
++    .stereo = stereo,
++    .view = view,
++    .shift_knob = shift_knob,
++};
++
++#ifdef __bfin__
++#define NO_LIBCALL __attribute__((optimize("no-tree-loop-distribute-patterns")))
++NO_LIBCALL void *memset(void *d, int c, unsigned n);
++NO_LIBCALL void *memcpy(void *d, const void *s, unsigned n);
++void *memset(void *d, int c, unsigned n) { unsigned char *p = d; while (n--) *p++ = (unsigned char)c; return d; }
++void *memcpy(void *d, const void *s, unsigned n) { unsigned char *p = d; const unsigned char *q = s; while (n--) *p++ = *q++; return d; }
++#endif
++
++int opl_init(struct opl_self *self)
++{
++    return opus_effect_register(self, &STUTTER) < 0 ? -1 : 0;
++}

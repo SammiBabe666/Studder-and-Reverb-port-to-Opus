@@ -1,0 +1,37 @@
+sammi.reverb and sammi.stutter - Hundekraft's Reverb and STUTTER effects as native Opus 2 plugins for the original
+Teenage Engineering OP-1 (firmware 246)
+Copyright (C) 2026 sammi (port, Opus integration, effect pages, tests, build tooling)
+Copyright (C) 2026 Hundekraft (the effects: kennel, Hundekraft OP-1 Workshop 3.1.1)
+Copyright (C) 2026 pcppcp (op1r-src, on which kennel is based; the host test mocks)
+Copyright (C) 2014 Emilie Gillet (the Elements reverb the Reverb is a fixed-point port of; MIT, LICENSE.elements)
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
+License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
+version, with the additional permission to combine it with the Teenage Engineering OP-1 firmware stated in
+NOTICE.kennel (kennel's NOTICE, which carries op1r-src's, unchanged). It is distributed WITHOUT ANY WARRANTY; see
+LICENSE (the GNU GPL, version 3).
+
+WHERE THE CODE COMES FROM
+- plugins/sammi.reverb/reverb.c: Hundekraft's ext/kennel/synth_sdk/plugins/reverb/reverb.c (the Elements reverb's
+  fixed-point port, through op1r), Hundekraft OP-1 Workshop source 3.1.1
+  (https://github.com/Hundekraft/op1-workshop, source/hundekraft-3.1.1-source.tar.gz, sha256
+  831f0aa0c4d06e39ee3f3cdadd6a3c44426910d0e56a76b39490169ccb299f9e; the file's sha256 3a9064ba...6d72, as the
+  archive's PROVENANCE.json records it). Original code (c) 2014 Emilie Gillet, MIT (LICENSE.elements).
+- plugins/sammi.stutter/stutter.c: Hundekraft's ext/kennel/synth_sdk/plugins/stutter/stutter.c, the same archive
+  (sha256 234660de...b441). The beat clock reader follows kennel's op1_plugin.h (op1_beat_clock).
+- third_party/: the two original files and their plugin.json manifests, unchanged, for reference and for the tests.
+- tests/host/harness/op1_host.h: op1r-src's host mocks (pcppcp), unchanged, as carried by Project_Hollow_Saint.
+- tests/bfin_sim/start.S, sim.ld and tools/toolchain/: from Project_Hollow_Saint (the hollow_saint authors,
+  GPL-3.0-or-later). The toolchain script fetches binutils, GCC, GMP, MPFR, MPC and flex, which keep their own licences.
+- The Opus 2 headers (opus_plugin.h, op1fw.h) and plugin_tool.py are LizardMan's Opus plugin kit
+  (https://github.com/LizardMan245/opus, plugin-kit, GPL-3.0); they are used to build, not copied here.
+
+MODIFICATIONS (GPL-3.0 section 5): what was changed against Hundekraft's files, and why, is listed at the top of each
+plugin source and in docs/MODIFICATIONS.md, with the full diffs in docs/diffs/. Modified 2026-11-01.
+
+NOT INCLUDED, NOT COVERED
+No Teenage Engineering firmware, firmware image, device key, NAND image, font or artwork is in this repository or its
+release archives. The STUTTER plugin reads (never writes) three words of the running firmware's RAM at firmware 246's
+addresses, as kennel does. Hundekraft's screen artwork (kalireverb.svg, by DAN76; stutter.svg) is not used: the
+plugins draw through the Opus effect page. Not affiliated with or endorsed by Teenage Engineering, Hundekraft or
+LizardMan. OP-1 is a trademark of Teenage Engineering AB.

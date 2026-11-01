@@ -1,0 +1,27 @@
+PASS differential reverb: port == Hundekraft original, 4147200 bytes (59f044bdd249039c)
+PASS differential stutter: port == Hundekraft original, 11390464 bytes (1c186447c8aa4390)
+PASS hkreverb port checks: 5255 passed, 0 failed
+PASS hkstutter port checks: 5642 passed, 0 failed
+RT60 (s) by time 0 / 16000 / 32767 (rows) x tone 0 / 20000 / 32767 (columns), mix all wet:
+      1.61     1.81     1.82
+      2.79     3.12     3.17
+     15.72     8.81    14.17
+tail brightness (dB, 3 kHz+ against 100 Hz-1 kHz):
+       2.0      8.4      9.5
+       0.5      7.7      9.1
+      -1.3      7.0      8.6
+PASS RT60 rises with time at tone column 0: 1.61 < 2.79 < 15.72 s
+PASS RT60 rises with time at tone column 1: 1.81 < 3.12 < 8.81 s
+PASS RT60 rises with time at tone column 2: 1.82 < 3.17 < 14.17 s
+PASS the tail brightens with tone at time row 0: 2.0 < 8.4 < 9.5 dB
+PASS the tail brightens with tone at time row 1: 0.5 < 7.7 < 9.1 dB
+PASS the tail brightens with tone at time row 2: -1.3 < 7.0 < 8.6 dB
+PASS echo density with diffusion 0 -> max: 0.072 -> 0.146
+mix 0 / 8192 / 16384 / 32767: dry gain, wet level (dB re input): 1.000 / -376.5, 0.692 / -7.6, 0.384 / -1.6, -0.229 / 4.3
+PASS mix 0: the dry input alone
+PASS the dry share falls with mix
+PASS the wet share rises with mix
+PASS master: L - R out == L - R in (the dry image kept, the wet centred)
+PASS master: within 16 bits
+PASS analysis: 12 passed, 0 failed
+host tests: all passed
