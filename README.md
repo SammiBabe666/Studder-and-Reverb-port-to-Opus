@@ -41,11 +41,11 @@ the instrument: the install, the effect pages and the real CPU load are untried.
 The files are in [`release/`](release/):
 - `sammi.reverb.opmod` and `sammi.stutter.opmod`;
 - `SHA256SUMS.txt`;
-- `sammi-reverb-stutter-1.0.0.zip`, which holds both plugins, the install note, the docs, the licences, the test
+- `sammi-reverb-stutter-1.1.0.zip`, which holds both plugins, the install note, the docs, the licences, the test
   results and the complete source.
 
 You need an original OP-1 (not the OP-1 field) on firmware 246 with **Opus 2** installed. The Opus site's patcher
-makes the update from your own `op1_246.op1`. Both plugins need **core 2.0** or later, which every Opus 2 release has.
+makes the update from your own `op1_246.op1`. Both plugins need **core 2.2** or later (the plugin kit used here documents cores up to 2.13).
 These steps follow the plugin kit's `docs/getting-started.md`. The Opus website itself could not be reached from the
 machine this was built on.
 
@@ -77,7 +77,7 @@ Every name, range and default here comes from Hundekraft's source. Full details:
 | ⚪ white | **diffusion**: the allpasses, 0.5 → 0.75 |
 | 🟠 orange | **mix**: dry → wet |
 
-The page shows the four values (0–99) and a picture of the tail. On the master, the tank hears (L + R) / 2 and its
+The page shows the four values (0–99) and **the endless mirror**, a tunnel lit by the tail's own level. On the master, the tank hears (L + R) / 2 and its
 reverb goes in the middle; the dry stereo image is kept, as on kennel.
 
 **hkstutter**
@@ -89,8 +89,8 @@ reverb goes in the middle; the dry stereo image is kept, as on kennel.
 | ⚪ white | **shape**: 2–12 ms fades; in gate, the open time 10–90 % | the OS's fine step |
 | 🟠 orange | **chance**: how many slices stutter | **FREEZE**: clockwise on, anticlockwise off (per slot, not saved) |
 
-The page shows rate, mode, shape and chance, plus the last 16 slices (tall bars stuttered, short ones played
-through). The caption shows the parts and freeze.
+The page shows rate, mode, shape and chance, and **the defective tape head**: the timeline pinching into the head
+and the fragment shaking in its box, once per repeat, as the DSP plays it.
 
 The grid follows the OP-1's tempo (BPM or MIDI clock) and the tape's speed while the clock follows the tape. With no
 clock it runs on at 120 BPM.
@@ -99,14 +99,30 @@ clock it runs on at 120 BPM.
 shift + orange here. An Opus effect type has a shift layer but no encoder-press handler. Both are declared in the
 manifest as `modal`, so they never clash with another plugin.
 
+## The pages (1.1.0)
+
+| STUTTER: the defective tape head | REVERB: the endless mirror |
+|---|---|
+| ![STUTTER](docs/media/stutter_repeat.gif) | ![REVERB](docs/media/reverb_default.gif) |
+
+- **Drawn from what the DSP is doing:** STUTTER from its slice, part, mode and read position; REVERB from the input's
+  and the tank's own levels. The encoders' colours mark what each encoder drives.
+- **Switched off (T3):** the OS's own "off" overlay dims the pictures exactly as it dims a stock effect's page,
+  because they are drawn on the stock effects' layer, under the OS's screen. No guessing at the state is involved.
+- **Details:** the states, the colour mapping, the off behaviour, the cost and what the previews are:
+  [docs/VISUALS.md](docs/VISUALS.md). The previews were rendered on a PC from the plugins' own code, not captured on
+  an OP-1.
+
 ## CPU and memory
 
 | | Simulator, worst block (mono / master) | Estimated on a device | Memory (OS slots) |
 |---|---|---|---|
-| hkreverb | 14,683 / 17,521 cycles | ~25–30k (4–5 % of the block) | ~174 KB + 3 KB image |
-| hkstutter | 12,733 / 15,528 cycles (init: 32,868, the ring clear) | ~14–17k | ~262 KB + 6 KB image |
+| hkreverb | 15,004 / 17,808 cycles | ~25–30k (4–5 % of the block) | ~174 KB + 3 KB image |
+| hkstutter | 12,762 / 15,557 cycles (init: 32,868, the ring clear) | ~14–17k | ~262 KB + 6 KB image |
 
 - The simulator doesn't model the OP-1's SDRAM cache misses; the estimates add them, by the kit's own rule of thumb.
+- The pages: the plugins' own drawing code costs about 1.1–2.3k cycles a frame in the display thread, plus the core's
+  renderer for at most 154 (REVERB) and 89 (STUTTER) primitives.
 - Neither plugin has a measured `cpu.txt` yet, so the core holds each to a tenth of the audio block (58,052 cycles).
 - How to measure on your OP-1 and record it: [docs/TESTING.md](docs/TESTING.md#5-8-and-9-the-compiled-code-in-the-blackfin-simulator-testsbfin_simrunsh).
 
@@ -120,7 +136,8 @@ manifest as `modal`, so they never clash with another plugin.
   and their change is added to both sides.
 - **Reverb, at the very top of time:** the original keeps a tiny idle residue at some tone settings: ±8 LSB, about
   −72 dBFS, bounded and not growing. Its tail there runs for up to about 85 s. The port keeps it, bit for bit.
-- **The screens are the core's effect page,** not Hundekraft's artwork: four values, a picture and a caption.
+- **The pages' pictures are new** (Hundekraft's artwork is not used) and have not been seen on an OP-1's display:
+  their place beside the core's corner text is kept clear by design (x 88–232, y 14–134), not by a device check.
 - **Effect names `hkreverb` / `hkstutter`.** These differ from the names opus.bridge gives Hundekraft's own effects
   (`reverb` / `stutter`), so both can be loaded at once. A sound saved with Hundekraft's own effect still loads
   through the bridge, not these plugins.

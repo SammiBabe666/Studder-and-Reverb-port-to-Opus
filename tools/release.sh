@@ -14,4 +14,5 @@ sh "$ROOT/tests/host/run.sh" "$ROOT/build/host" | tee "$ROOT/results/host_tests.
 cp "$ROOT/build/host/analysis.txt" "$ROOT/results/reverb_analysis.txt"
 sh "$ROOT/tests/bfin_sim/run.sh" "$ROOT/build/sim" | tee "$ROOT/results/bfin_sim.txt"
 sh "$ROOT/tools/build.sh" "$ROOT/build/opus" | tee "$ROOT/results/build.txt"
+sh "$ROOT/tools/previews.sh" | tee "$ROOT/results/previews.txt"
 python3 -I "$ROOT/tools/make_release.py" "$ROOT/build/opus"

@@ -1,6 +1,7 @@
-# Tests and results (1.0.0, 2026-11-01)
+# Tests and results (1.1.0, 2026-11-02)
 
-What was done, kept apart by kind, as it happened. Nothing below claims more than was run. The logs are in
+What was done, kept apart by kind, as it happened. Nothing below claims more than was run. 1.1.0 adds the pages'
+pictures ([VISUALS.md](VISUALS.md)) and corrects the `core` line to 2.2; every test below was run again on 1.1.0. The logs are in
 [`results/`](../results/): `host_tests.txt`, `reverb_analysis.txt`, `bfin_sim.txt`, `build.txt`.
 
 | Kind | Status |
@@ -14,6 +15,8 @@ What was done, kept apart by kind, as it happened. Nothing below claims more tha
 | 10. Conflicts with other Opus effects and plugin managers | checked on paper (names, ids, controls, type count); **not loaded beside other plugins** |
 | 11. Opus emulator | **not done**: the kit's emulator is not released yet ("What the kit does not have yet", plugin-kit README) |
 | 12. A physical OP-1 | **not done**: no OP-1 was available |
+| 13. The pages (1.1.0): drawn only on their own page, within their box, encoder colours only, bounded cost, still when no audio runs, every STUTTER mode drawn differently | **pass** (host; cost also in the simulator) |
+| 14. The pages under the OS's off overlay | **by construction** (the stock effects' layer); previewed with a simulated overlay, **not seen on a device** |
 
 ## The toolchain
 
@@ -28,14 +31,20 @@ The Opus plugin kit is LizardMan245/opus at commit `d7f28b0` (2026-10-31). Hunde
 ## 1–3. Build and read-back
 
 ```
-sammi.reverb 1.0.0, 4,132 bytes: image 2,968 bytes, zero fill 288, 40 relocations
-    imports: fw_snprintf, opus_effect_register          core 2.0, cpu unmeasured, no uses lines
-sammi.stutter 1.0.0, 8,204 bytes: image 5,944 bytes, zero fill 376, 107 relocations
-    imports: fw_snprintf, opus_effect_register, opus_fx_owner, opus_instrument_now
-    core 2.0, cpu unmeasured, uses: blue_turn shift modal, orange_turn shift modal
+sammi.reverb 1.1.0, 7,052 bytes: image 4,680 bytes, zero fill 192, 110 relocations
+    imports: fw_snprintf, opus_effect_register, opus_fx_owner, opus_fx_page_shown, opus_instrument_now,
+             opus_on_frame_begin, opus_on_frame_under, opus_page_fill, opus_page_frame, opus_page_line
+    core 2.2, cpu unmeasured, no uses lines
+sammi.stutter 1.1.0, 11,568 bytes: image 8,652 bytes, zero fill 248, 131 relocations
+    imports: fw_snprintf, opus_effect_register, opus_fx_owner, opus_fx_page_shown, opus_instrument_now,
+             opus_on_frame_begin, opus_on_frame_under, opus_page_dot, opus_page_fill, opus_page_frame,
+             opus_page_line, opus_sincos
+    core 2.2, cpu unmeasured, uses: blue_turn shift modal, orange_turn shift modal
 ```
 
-No warnings. Neither imports a `place` or any `fw_*` name but `fw_snprintf` (the page's text). STUTTER's beat-clock
+No warnings. Neither imports a `place` or any `fw_*` name but `fw_snprintf` (the page's text). 1.0.0's STUTTER
+called `opus_fx_owner` and `opus_instrument_now` (core 2.2, the managers' service) with a `core 2.0` line, so a core
+2.0 or 2.1 would have refused it with "needs opus_fx_owner"; 1.1.0 says `core 2.2` for both. STUTTER's beat-clock
 read is a plain memory read at firmware 246's addresses, so it shows in no import. It is declared in its manifest's
 comment and in the README.
 
@@ -70,7 +79,8 @@ The comparison found one real difference on the way, and it was fixed: an early 
 ring clear in STUTTER's init. REVERSE while frozen reads the end of the part before it is recorded, which is silence
 after the clear and garbage without it. The clear is back, exactly as kennel does it.
 
-**Port checks** (`port_checks.c`): reverb 5,255 checks, STUTTER 5,642, all pass. They cover:
+**Port checks** (`port_checks.c`): reverb 3,669 checks, STUTTER 4,872, all pass (1.0.0's counts were higher only
+because the old page's waveform and caption were checked point by point). They cover:
 
 - **registration:** name, size, kennel's defaults, limits, needs;
 - **the page:** 81 knob combinations; every string lowercase, as the OP-1's font needs, and within its buffer; every
@@ -95,6 +105,18 @@ after the clear and garbage without it. The clear is back, exactly as kennel doe
   - FREEZE keeps the frozen part across 9 slices;
   - no clock, and the tape stopped while followed, both run on at 120 BPM;
   - at 30 BPM a 1/4 slice is cut to the ring, with no out-of-bounds access (ASan).
+
+**The pages (1.1.0)**, in the same checks: both effects play a real input (with clicks for onsets) on all three
+positions through 4 (REVERB) or 8 (STUTTER, every mode) settings while the core's frame sequence runs every 23
+blocks (frame start, the drawing under the OS's screen, the page's view):
+- 3,120 and 6,240 frames drawn, all within x 88–232, y 14–134 (clear of the corner text, inside the OP-1's window);
+- only the four encoder colours and the two greys, and all four encoder colours used;
+- at most 154 (REVERB) and 89 (STUTTER) primitives a frame;
+- with no audio block running (as when the OS stops calling a switched-off effect), the picture is perfectly still
+  frame after frame, and REVERB's goes back to the idle tunnel (no reflections, no orange);
+- STUTTER's four modes draw differently;
+- nothing is drawn without an effect page, for another owner's page, or once the plugin's view stops being called
+  (another type's page).
 
 **Analysis** (`analysis.py`, on the port's renders; times assume 44.1 kHz at the effect's input):
 
@@ -137,8 +159,13 @@ building Opus plugins with this compiler.
 
 | | synth / drum (mono), worst | mean | master (stereo), worst | mean | init, worst |
 |---|---|---|---|---|---|
-| reverb | 14,683 | 12,640 | 17,521 | 15,448 | 175 |
-| STUTTER | 12,733 | 9,064 | 15,528 | 10,384 | 32,868 (the ring clear) |
+| reverb | 15,004 | 12,960 | 17,808 | 15,734 | 175 |
+| STUTTER | 12,762 | 9,087 | 15,557 | 10,407 | 32,868 (the ring clear) |
+
+1.1.0's audio side adds the page's levels: about 320 cycles a block for REVERB (the input's peak), 30 for STUTTER.
+The page, a frame (the plugin's own drawing code and view, timed with the core's drawing calls stubbed): REVERB worst
+1,459, mean 1,100 cycles; STUTTER worst 2,256, mean 1,670. That is the display thread's time, not the audio
+block's; the core's renderer then draws the primitives.
 
 **On a device these will be higher.** The kit says each 32-byte line of ordinary memory an audio block touches costs
 about 107 cycles.
@@ -175,6 +202,12 @@ the images (3 KB, 6 KB). Each extra instance a manager makes adds one bulk. Neit
 - **Managers:** both are ordinary effect types (no `cpu user`). They keep nothing of an instance in their statics
   except STUTTER's FREEZE flag and page mirror, which are per position, as kennel's were.
 
+## Previews (1.1.0)
+
+`tools/previews.sh` renders the pages from the plugins' own code on the PC (stand-in rasteriser, stand-in corner text,
+simulated off overlay): `docs/media/*.png`, `*.gif`. See [VISUALS.md](VISUALS.md#what-the-previews-are). They are
+renderings, not captures from an OP-1.
+
 ## What to try on the OP-1 (and then record with a `checked device` line in each manifest)
 
 1. **Load:** both rows say "loaded", with developer mode off as well as on.
@@ -188,7 +221,10 @@ the images (3 KB, 6 KB). Each extra instance a manager makes adds one bulk. Neit
    - shift + blue through 2…16 parts;
    - shift + orange to freeze, then unfreeze;
    - change the tempo, play and stop the tape, use MIDI clock if you have it.
-4. **Living with the rest of the OP-1:** switch sounds, presets and instruments; save; record to tape; disk mode;
+4. **The pages:** the picture sits clear of the corner values; it moves with the sound; T3 off dims it under the
+   OS's overlay like a stock effect's, T3 on restores it; turning knobs while off changes only what the overlay
+   covers (as on a stock page).
+5. **Living with the rest of the OP-1:** switch sounds, presets and instruments; save; record to tape; disk mode;
    switch off and on.
-5. **Next to other plugins:** the starter pack and opus.bridge.
-6. **CPU:** the measurement above.
+6. **Next to other plugins:** the starter pack and opus.bridge.
+7. **CPU:** the measurement above.

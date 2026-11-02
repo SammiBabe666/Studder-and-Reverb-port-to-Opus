@@ -1,0 +1,15 @@
+reverb_dark: 90 frames -> reverb_dark.gif, reverb_dark.png (frame 63)
+reverb_default: 90 frames -> reverb_default.gif, reverb_default.png (frame 33)
+reverb_dry: 90 frames -> reverb_dry.gif, reverb_dry.png (frame 31)
+reverb_idle: 14 frames -> reverb_idle.gif, reverb_idle.png (frame 10)
+reverb_long: 90 frames -> reverb_long.gif, reverb_long.png (frame 52)
+reverb_short: 90 frames -> reverb_short.gif, reverb_short.png (frame 28)
+stutter_brake: 120 frames -> stutter_brake.gif, stutter_brake.png (frame 119)
+stutter_chance: 120 frames -> stutter_chance.gif, stutter_chance.png (frame 119)
+stutter_fast: 120 frames -> stutter_fast.gif, stutter_fast.png (frame 105)
+stutter_freeze: 89 frames -> stutter_freeze.gif, stutter_freeze.png (frame 75)
+stutter_gate: 120 frames -> stutter_gate.gif, stutter_gate.png (frame 56)
+stutter_repeat: 120 frames -> stutter_repeat.gif, stutter_repeat.png (frame 104)
+stutter_reverse: 120 frames -> stutter_reverse.gif, stutter_reverse.png (frame 119)
+reverb_sheet.png: 7 cells
+stutter_sheet.png: 8 cells

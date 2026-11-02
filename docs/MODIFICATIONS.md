@@ -20,7 +20,7 @@ The tests show it: the ports' output equals the originals' byte for byte, on the
 | `op1_fx_param_q15(p, i)`: raw filter-slot words through the firmware's range table | a clamp: the parameters are this type's own, 0..32767 | Opus types declare their own limits; kennel's `plugin.json` defaults are already positions 0..32767 and are kept as they are |
 | the master: kennel's dispatcher ran a mono effect on `m = (L + R) / 2` and added `y - m` to both sides | `stereo()` does exactly that | the original's master behaviour, kept |
 | the FX peak meter word (`op1_fx_meter`) written for the screen | not written | the Opus effect page has no meter |
-| an OS SVG screen (`SCREEN_reverb` with Kali artwork by DAN76; `SCREEN_stutter`, a film projector) | `view()`: the core's effect page, with the four values, a picture and a caption | Opus effect types draw through the core's page (`struct opus_fx_view`). The artwork is not used. STUTTER's picture is the original's "projected picture" of the last 16 slices |
+| an OS SVG screen (`SCREEN_reverb` with Kali artwork by DAN76; `SCREEN_stutter`, a film projector) | `view()`: the core's effect page with the four values; the picture (1.1.0: the defective tape head, the endless mirror) drawn under the OS's screen with `opus_on_frame_under` | Opus effect types draw through the core's page; the stock effects' layer lets the OS's off overlay dim the picture natively. The artwork is not used. STUTTER keeps the original's last 16 slices along the bottom |
 | `satb` through the Blackfin builtin unless `OP1_HOST` | the builtin on `__bfin__`, the portable form elsewhere | the same choice keyed on the compiler, so the host tests build |
 
 ## The reverb
@@ -40,6 +40,10 @@ Nothing else. The peak the render computed for the meter is still computed (`rv_
 | `sx_blocks[]`, `s->latch` | `sx_blocks` dropped (unused by the effect); `latch` kept | |
 
 ## Added
+
+- 1.1.0: the per-position page state the audio publishes after each block (REVERB: the input's peak and the loop's
+  level, read from `lp1`/`lp2`; STUTTER: the slice, part, read position and mode it already keeps). Read-only: the
+  sound does not read them back, and the output stays byte-identical (the tests).
 
 - `need`, `init`, `mono`, `stereo`, `view`, `shift_knob` and `opl_init`: the Opus 2 effect type around the
   original's calls.

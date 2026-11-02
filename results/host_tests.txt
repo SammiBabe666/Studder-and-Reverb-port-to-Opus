@@ -1,7 +1,9 @@
 PASS differential reverb: port == Hundekraft original, 4147200 bytes (59f044bdd249039c)
 PASS differential stutter: port == Hundekraft original, 11390464 bytes (1c186447c8aa4390)
-PASS hkreverb port checks: 5255 passed, 0 failed
-PASS hkstutter port checks: 5642 passed, 0 failed
+  page: 3120 frames drawn, worst 154 primitives a frame
+PASS hkreverb port checks: 3669 passed, 0 failed
+  page: 6240 frames drawn, worst 89 primitives a frame
+PASS hkstutter port checks: 4872 passed, 0 failed
 RT60 (s) by time 0 / 16000 / 32767 (rows) x tone 0 / 20000 / 32767 (columns), mix all wet:
       1.61     1.81     1.82
       2.79     3.12     3.17

@@ -284,12 +284,12 @@ static void stutter_checks(void)
         mock_reg->view(pp, &v);
         CHECK(strcmp(v.value[0], rn[r]) == 0 && strcmp(v.value[1], mn[m]) == 0, "page %s %s: %s %s", rn[r], mn[m], v.value[0], v.value[1]);
         CHECK(strcmp(v.value[3], "100%") == 0, "chance 100%%: %s", v.value[3]);
-        CHECK(strcmp(v.caption, "4 parts") == 0, "caption: %s", v.caption);
+        CHECK(v.caption == 0 && v.waves == 0, "the middle is the machine: no caption, no waves");
         if (m == M_GATE) CHECK(strcmp(v.value[2], "10%") == 0, "gate open at shape 0: %s", v.value[2]);
         else CHECK(strcmp(v.value[2], "2 ms") == 0, "fade at shape 0: %s", v.value[2]);
     }
     { struct opus_fx_view v; short pp[8] = { 0, 0, 32767, 0, 0, 2816, 0, 0 }; mock_reg->view(pp, &v);
-      CHECK(strcmp(v.value[2], "12 ms") == 0 && strcmp(v.value[3], "0%") == 0 && strcmp(v.caption, "16 parts") == 0, "page ends: %s %s %s", v.value[2], v.value[3], v.caption); }
+      CHECK(strcmp(v.value[2], "12 ms") == 0 && strcmp(v.value[3], "0%") == 0, "page ends: %s %s", v.value[2], v.value[3]); }
 
     /* the musical behaviour at 120 BPM (beat 22050 samples), the clock running, the synth */
     static const int32_t slice_len[6] = { 22050, 11025, 7350, 5512, 3675, 2756 };
@@ -420,6 +420,126 @@ static void stutter_checks(void)
 }
 #endif
 
+/* ---------------------------------------------------------------- the page's picture (both) */
+/* One frame as the core runs it: the frame's start, the drawing under the OS's screen, then the core's page (view).
+ * Returns the number of primitives drawn under. */
+static int page_frame(const short *par)
+{
+    struct opus_fx_view v;
+    mock_frame_clear();
+    if (mock_frame_begin) mock_frame_begin();
+    if (mock_frame_under) mock_frame_under((unsigned short *)0);
+    const int n = mock_prims;
+    if (mock_page_shown) mock_reg->view(par, &v);
+    return n;
+}
+static unsigned long frame_hash(void)
+{
+    unsigned long h = 1469598103u;
+    for (int y = 0; y < MOCK_H; y++) for (int x = 0; x < MOCK_W; x++) for (int c = 0; c < 3; c++) h = (h ^ mock_fb[y][x][c]) * 16777619u;
+    return h;
+}
+/* the art's box, clear of the corners' labels and values the core draws, and within the window (y 2-146) */
+#define ART_X0 88
+#define ART_X1 232
+#define ART_Y0 14
+#define ART_Y1 134
+
+static void display_checks(void)
+{
+    CHECK(mock_frame_begin != 0 && mock_frame_under != 0, "frame handlers registered");
+    const size_t N = 64 * 6000;
+    int16_t *x = malloc(N * 2);
+    signal(x, N, 77);
+    for (size_t i = 0; i < N; i++) if ((i / 4410) % 7 == 0 && (i % 4410) < 40) x[i] = (int16_t)((i & 1) ? 30000 : -30000);   /* clicks: onsets */
+    unsigned used = 0;
+    int worst = 0, outside = 0, badc = 0, frames_drawn = 0;
+#ifdef TEST_REVERB
+    static const short sets[4][8] = { { 16000, 20000, 16384, 12000 }, { 32767, 0, 32767, 32767 }, { 0, 32767, 0, 0 }, { 26000, 12000, 20000, 20000 } };
+    const int nsets = 4;
+#else
+    static const short sets[8][8] = {
+        { 17152, 2304, 8000, 32767, 0, 13568 }, { 17152, 10000, 8000, 32767, 0, 13568 }, { 17152, 18000, 30000, 32767, 0, 13568 },
+        { 17152, 30000, 20000, 32767, 0, 13568 }, { 0, 2304, 0, 20000, 0, 256 }, { 32767, 2304, 32767, 32767, 0, 2816 },
+        { 25000, 10000, 16000, 32767, 0, 2304 }, { 12000, 18000, 1000, 32767, 0, 1792 } };
+    const int nsets = 8;
+    unsigned long mode_hash[4] = { 0, 0, 0, 0 };
+    host_beat.len = 22050 << 14; host_beat.step = 0x100000; host_beat.follows_tape = 0;
+#endif
+    for (int pos = 0; pos < 3; pos++)
+        for (int k = 0; k < nsets; k++) {
+            inst_t in; make(&in, pos == 2, 0);
+            mock_instrument = pos == 1;
+            mock_owner = pos == 2 ? 16 : (pos == 1 ? 9 : 2);
+            mock_page_shown = 1;
+            mock_reg->init(&in.fx);
+            int16_t l[64], r[64];
+#ifndef TEST_REVERB
+            int32_t next = 0;
+#endif
+            for (size_t b = 0; b < N / 64; b++) {
+#ifndef TEST_REVERB
+                host_beat.next = next; next -= 0x100000; while (next < 0) next += 22050 << 14;
+#endif
+                for (int i = 0; i < 64; i++) { l[i] = x[64 * b + i]; r[i] = (int16_t)(x[64 * b + i] / 2); }
+                if (pos == 2) mock_reg->stereo(&in.fx, l, r, sets[k]); else mock_reg->mono(&in.fx, l, sets[k]);
+                if (b % 23 == 0) {                         /* a frame about every 33 ms */
+                    const int n = page_frame(sets[k]);
+                    if (b == 0) continue;                  /* the first frame: the page not yet seen */
+                    frames_drawn += n > 0;
+                    if (n > worst) worst = n;
+                    if (n && (mock_minx < ART_X0 || mock_maxx > ART_X1 || mock_miny < ART_Y0 || mock_maxy > ART_Y1)) outside++;
+                    badc += mock_bad_colour;
+                    used |= mock_colours_used;
+#ifndef TEST_REVERB
+                    const int m = (int)sx_range(sets[k][1], 4);
+                    if (((const st_t *)in.fx.state)->stut && ((const st_t *)in.fx.state)->part >= 1) mode_hash[m] ^= frame_hash();
+#endif
+                }
+            }
+            /* the audio stops (as when the effect is switched off and its blocks no longer run): the picture settles
+             * and stays still: no animation claims processing that is not happening */
+            unsigned long h1 = 0, h2 = 1;
+            for (int f = 0; f < 20; f++) { page_frame(sets[k]); h1 = h2; h2 = frame_hash(); }
+            CHECK(h1 == h2, "pos %d set %d: still when no audio block runs", pos, k);
+#ifdef TEST_REVERB
+            page_frame(sets[k]);
+            CHECK(!(mock_colours_used & (4 | 16)), "pos %d set %d: with no audio, no reflections and no orange (idle tunnel)", pos, k);
+#endif
+            drop(&in, 0);
+        }
+    CHECK(frames_drawn > 100, "frames drawn: %d", frames_drawn);
+    CHECK(outside == 0, "%d frames drew outside the art box %d-%d x %d-%d", outside, ART_X0, ART_X1, ART_Y0, ART_Y1);
+    CHECK(badc == 0, "only the encoders' colours, dim and off: %d others", badc);
+    CHECK((used & 30) == 30, "all four encoder colours used over the run (mask %x)", used);
+    CHECK(worst <= 200, "at most 200 primitives a frame: %d", worst);
+    printf("  page: %d frames drawn, worst %d primitives a frame\n", frames_drawn, worst);
+#ifndef TEST_REVERB
+    for (int a = 0; a < 4; a++) for (int b = a + 1; b < 4; b++) CHECK(mode_hash[a] != mode_hash[b], "modes %d and %d draw differently", a, b);
+#endif
+    /* only on its own page: no page, a stale view (another type's page), another owner: nothing drawn */
+    {
+        inst_t in; make(&in, 0, 0);
+        mock_reg->init(&in.fx);
+        mock_page_shown = 1; mock_owner = 3;
+        page_frame(sets[0]); page_frame(sets[0]);
+        CHECK(page_frame(sets[0]) > 0, "draws on its own page");
+        mock_page_shown = 0;
+        CHECK(page_frame(sets[0]) == 0, "nothing without an effect page");
+        mock_page_shown = 1;
+        mock_owner = 11;
+        CHECK(page_frame(sets[0]) == 0, "nothing for another owner's page");
+        mock_owner = 3;
+        page_frame(sets[0]);
+        struct opus_fx_view v;
+        for (int f = 0; f < 4; f++) { mock_frame_clear(); mock_frame_begin(); mock_frame_under(0); }   /* view stops: another type */
+        (void)v;
+        CHECK(mock_prims == 0, "nothing once its view stops (another type's page)");
+        drop(&in, 0);
+    }
+    free(x);
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1) dir = argv[1];
@@ -430,6 +550,7 @@ int main(int argc, char **argv)
 #else
     stutter_checks();
 #endif
+    display_checks();
     printf("%s %s port checks: %d passed, %d failed\n", fails ? "FAIL" : "PASS", mock_reg->name, passes, fails);
     return fails ? 1 : 0;
 }

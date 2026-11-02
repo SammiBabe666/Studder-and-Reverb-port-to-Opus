@@ -1,12 +1,14 @@
 hkreverb: cycles per 64-sample block in the simulator (no SDRAM/cache model)
-  synth (mono): worst 14683, mean 12640 over 8100 blocks
-  drum (mono): worst 14683, mean 12640 over 8100 blocks
-  master (stereo): worst 17521, mean 15448 over 8100 blocks
+  synth (mono): worst 15004, mean 12960 over 8100 blocks
+  drum (mono): worst 15004, mean 12960 over 8100 blocks
+  master (stereo): worst 17808, mean 15734 over 8100 blocks
   init: worst 175
+  page frame (the plugin's own drawing code and view; the core's renderer not included): worst 1459, mean 1100 cycles, worst 154 primitives
 PASS blackfin reverb: the compiled port == Hundekraft's original, 4147200 bytes
 hkstutter: cycles per 64-sample block in the simulator (no SDRAM/cache model)
-  synth (mono): worst 12733, mean 9064 over 41727 blocks
-  drum (mono): worst 12733, mean 7652 over 14687 blocks
-  master (stereo): worst 15528, mean 10384 over 16287 blocks
+  synth (mono): worst 12762, mean 9087 over 41727 blocks
+  drum (mono): worst 12762, mean 7675 over 14687 blocks
+  master (stereo): worst 15557, mean 10407 over 16287 blocks
   init: worst 32868
+  page frame (the plugin's own drawing code and view; the core's renderer not included): worst 2256, mean 1670 cycles, worst 87 primitives
 PASS blackfin stutter: the compiled port == Hundekraft's original, 11390464 bytes

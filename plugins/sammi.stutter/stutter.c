@@ -27,8 +27,9 @@
  *   - init clears the ring as kennel's does (128 KB in 32-bit stores; kennel did it in the audio callback, an Opus init
  *     may run in the audio interrupt too); it also resets rec, which kennel left to its zeroed statics;
  *   - the master: kennel's mono-sum routing, here in stereo();
- *   - the peak meter word and the OS SVG screen: the Opus effect page instead (view): the four values, the last 16
- *     slices as kennel's projected picture drew them, and REPEATS and FREEZE in the caption;
+ *   - the peak meter word and the OS SVG screen: the core's effect page shows the four values (view); the picture,
+ *     "the defective tape head", is drawn under the OS's screen (frame_under) from the instance's state (shown[]), so
+ *     the OS's own off overlay dims it (see the page's notes below);
  *   - the beat clock is read where kennel's op1_beat_clock reads it (deep, read-only: see beat_clock below).
  *
  * Copyright (C) 2026 Hundekraft. GPL-3.0-or-later with the OP-1 firmware permission. This port: GPL-3.0-or-later with
@@ -98,7 +99,11 @@ typedef struct {
  * (shift + orange), the audio reads it. Not saved, as kennel's latch. */
 static volatile uint8_t freeze_latch[3];
 /* what the page shows of the position's instance (kennel's screen read st[pos]); the audio writes, the display reads */
-static volatile struct { int32_t slice; uint32_t hist; uint8_t frozen, mode; } shown[3];
+static volatile struct {
+    int32_t slice, part, ps, sub, len, pos, rd, rate, duty, fade;
+    uint32_t hist, blocks;
+    uint8_t frozen, mode, stut, reps, ndiv;
+} shown[3];
 
 static unsigned sx_range(int32_t q, unsigned count) { unsigned v = (unsigned)(q < 0 ? 0 : q); unsigned n = v * count >> 15; return n < count ? n : count - 1; }
 static unsigned sx_select(int32_t q, unsigned count) { return ((unsigned)(q < 0 ? 0 : q) >> 9) % count; }
@@ -241,10 +246,13 @@ static void sx_render(st_t *s, int16_t *ring, int pos, int16_t *buf, const int16
         slice_start(s, slen, p, pos);
         run(s, buf, ring, off, OP1_FX_BLOCK);
     }
-    shown[pos].slice = s->slice;
-    shown[pos].hist = s->hist;
-    shown[pos].frozen = s->frozen;
-    shown[pos].mode = s->mode;
+    /* what the page draws (read by the display only; nothing here is read back by the sound) */
+    shown[pos].slice = s->slice; shown[pos].part = s->part; shown[pos].ps = s->ps; shown[pos].sub = s->sub;
+    shown[pos].len = s->len; shown[pos].pos = s->pos; shown[pos].rd = s->rd; shown[pos].rate = s->rate;
+    shown[pos].duty = s->duty; shown[pos].fade = s->fade; shown[pos].hist = s->hist;
+    shown[pos].frozen = s->frozen; shown[pos].mode = s->mode; shown[pos].stut = s->stut;
+    shown[pos].reps = s->reps; shown[pos].ndiv = s->ndiv;
+    shown[pos].blocks++;
 }
 
 /* ======================= the Opus effect type ======================= */
@@ -289,11 +297,8 @@ static void stereo(struct opus_fx *fx, short *l, short *r, const short *par)
 }
 
 /* the effect page's owner (0-7 the synth's slots, 8-15 the drum's, 16 the master) as a kennel FX position */
-static int page_pos(void)
-{
-    const int o = opus_fx_owner();
-    return o >= 16 ? 2 : (o >= 8 ? 1 : 0);
-}
+static int owner_pos(int o) { return o >= 16 ? 2 : (o >= 8 ? 1 : 0); }
+static int page_pos(void) { return owner_pos(opus_fx_owner()); }
 
 /* The shift layer: shift + blue REPEATS, one step a detent (cyclic, as kennel's page word read through % 6);
  * shift + orange FREEZE (clockwise on, anticlockwise off). Green and white keep the OS's fine steps. */
@@ -313,19 +318,39 @@ static int shift_knob(short *par, int encoder, int detents)
     return 0;
 }
 
-/* Its page, in the encoders' order (blue top left, green bottom left, white top right, orange bottom right):
- * rate, mode, shape (fade ms, or the gate's open time) and chance; the picture is kennel's projected one, the last 16
- * slices, newest at the right: a slice that stuttered is a tall bar (REPEAT full, BRAKE stepping down, REVERSE
- * slanted, GATE dashed), one that played through a short one; the caption says REPEATS and FREEZE. */
+/* ======================= the page: the defective tape head (display thread) =======================
+ * The core draws the four values in the corners (view); the machine is drawn under the OS's screen
+ * (opus_on_frame_under, the layer the stock effects draw on), so the OS's own "off" overlay dims it exactly as it dims
+ * a stock effect's page when the effect is switched off (fx_bypass). It is drawn from the instance's own state
+ * (shown[]: the slice, the part, the mode, as the audio left them) and the page's parameters, nothing else. The
+ * encoders' colours (the user's theme):
+ *   blue   E1  the playback position: the timeline sweeping the beat, the rate's grid of slices above, BRAKE's speed
+ *   green  E2  the fragment and the repetition: the trapped piece, the part playing on the ruler, the slices that
+ *              stuttered along the bottom
+ *   white  E3  the machine: the head, the rollers, the fragment's box (its corners soft with a soft shape), FREEZE's
+ *              clamps
+ *   orange E4  destructive events: the catch at each repeat's start (a reversal's in REVERSE), the fragment itself
+ *              when the repeats are fast (8 or 16 parts)
+ * States: idle, the timeline sweeps the beat and the tape runs; a stuttering slice's first part, the box fills as the
+ * part is recorded; its repeats, the timeline pinches into the head and the fragment shakes in its box, once per
+ * repeat (REPEAT left to right, REVERSE right to left, BRAKE slowing, as the read position goes), the tape stops (runs
+ * backwards in REVERSE, slows in BRAKE); GATE, the box's shutter opens and closes with the gate; FREEZE, the box is
+ * clamped. */
+static volatile uint32_t frames;
+static uint32_t view_frame = 0x80000000u;
+static int view_owner = -1;
+static short page_par[8];
+static int32_t tape_phase;                    /* the tape's texture, units x 256, moved by the state each frame */
+static uint32_t last_blocks;
+
+static void frame_begin(void) { frames++; }
+
 static void view(const short *par, struct opus_fx_view *v)
 {
     static const char *const label[4] = { "rate", "mode", "shape", "chance" };
     static const char *const rates[6] = { "1/4", "1/8", "1/8t", "1/16", "1/16t", "1/32" };
     static const char *const modes[4] = { "repeat", "brake", "reverse", "gate" };
     static char value[4][12];
-    static char caption[32];
-    static short wave[OPUS_FX_WAVE];
-    const int pos = page_pos();
     const int ri = (int)sx_range(q15(par, 0), 6), mi = (int)sx_range(q15(par, 1), 4);
     const int32_t shape = q15(par, 2);
     fw_snprintf(value[0], 12, "%s", rates[ri]);
@@ -335,28 +360,142 @@ static void view(const short *par, struct opus_fx_view *v)
     else
         fw_snprintf(value[2], 12, "%i ms", (int)(((88 + ((shape * 441) >> 15)) * 10 + 220) / 441));   /* 2 .. 12 */
     fw_snprintf(value[3], 12, "%i%%", (int)(q15(par, 3) * 100 / 32767));
-    const uint32_t hist = shown[pos].hist;
-    const int frozen = shown[pos].frozen || freeze_latch[pos];
-    fw_snprintf(caption, 32, frozen ? "%i parts  freeze" : "%i parts", REPS[sx_select(par[5], 6)]);
-    /* 16 slices x 8 points: a stuttered slice's bar fills points 1-6, a played-through one a short stub */
-    for (int c = 0; c < HIST; c++) {
-        const int on = (hist >> (HIST - 1 - c)) & 1;
-        for (int k = 0; k < 8; k++) {
-            int32_t y = 0;
-            if (k >= 1 && k <= 6) {
-                if (!on) y = k == 3 || k == 4 ? 6000 : 0;
-                else if (mi == M_GATE) y = (k & 1) ? 26000 : 0;
-                else if (mi == M_REVERSE) y = 30000 - (k - 1) * 4800;
-                else if (mi == M_BRAKE) y = 26000 - (c & 3) * 5000;
-                else y = 26000;
+    for (int i = 0; i < 4; i++) { v->label[i] = label[i]; v->value[i] = value[i]; }
+    for (int i = 0; i < 8; i++) page_par[i] = par[i];
+    v->waves = 0;                                    /* the middle is the machine (frame_under) */
+    v->caption = 0;                                  /* REPEATS and FREEZE are drawn: the ruler and the clamps */
+    view_owner = opus_fx_owner();
+    view_frame = frames;
+}
+
+#define HX 160                                       /* the head gap, units */
+#define HY 74
+static void box_outline(int x0, int y0, int x1, int y1, int soft, int colour)
+{
+    if (!soft) { opus_page_frame(x0, y0, x1, y1, colour); return; }
+    opus_page_fill(x0 + 1, y0, x1 - 1, y0, colour); opus_page_fill(x0 + 1, y1, x1 - 1, y1, colour);
+    opus_page_fill(x0, y0 + 1, x0, y1 - 1, colour); opus_page_fill(x1, y0 + 1, x1, y1 - 1, colour);
+}
+static void roller(int cx, int cy, int32_t phase)
+{
+    int sn, cs;
+    opus_page_dot(cx, cy, 9, 0, OPUS_COLOR_E3);
+    opus_page_dot(cx, cy, 2, 1, OPUS_COLOR_E3);
+    opus_sincos((int)((phase >> 4) & 4095) - 2048, &sn, &cs);
+    opus_page_line(cx, cy, cx + (cs * 7 >> 12), cy + (sn * 7 >> 12), OPUS_COLOR_DIM);
+    opus_page_line(cx, cy, cx - (cs * 7 >> 12), cy - (sn * 7 >> 12), OPUS_COLOR_DIM);
+}
+
+static void machine(int pos, const short *par)
+{
+    /* the state, only while the instance runs (its blocks counted since the last frame); still, the machine stands */
+    const uint32_t b = shown[pos].blocks;
+    const int running = b != last_blocks;
+    last_blocks = b;
+    const int mode = shown[pos].mode, stut = shown[pos].stut, frozen = shown[pos].frozen;
+    const int32_t sub = shown[pos].sub > 0 ? shown[pos].sub : 1, len = shown[pos].len > 0 ? shown[pos].len : 1;
+    const int32_t part = shown[pos].part, ps = shown[pos].ps < sub ? shown[pos].ps : sub - 1;
+    const int reps = shown[pos].reps ? shown[pos].reps : 4, ndiv = shown[pos].ndiv ? shown[pos].ndiv : 1;
+    const int trapped = stut && mode != M_GATE && (part >= 1 || frozen);
+    const int soft = q15(par, 2) > 16384;
+    /* the tape's speed this frame, from the state: runs, stops on a repeat, runs back in REVERSE, slows in BRAKE */
+    int32_t speed = 768;
+    if (trapped) speed = mode == M_REVERSE ? -768 : (mode == M_BRAKE ? (int32_t)(((int64_t)768 * shown[pos].rate) >> 16) : 0);
+    if (frozen || !running) speed = 0;
+    tape_phase += speed;
+    /* the tape: its two edges, its texture of ticks moving with it */
+    opus_page_fill(92, 50, 228, 50, OPUS_COLOR_DIM);
+    opus_page_fill(92, 98, 228, 98, OPUS_COLOR_DIM);
+    const int off = (int)(((tape_phase >> 8) % 12 + 12) % 12);
+    for (int x = 92 + off; x <= 228; x += 12) {
+        opus_page_fill(x, 54, x, 56, OPUS_COLOR_OFF);
+        opus_page_fill(x, 92, x, 94, OPUS_COLOR_OFF);
+    }
+    roller(104, HY, tape_phase);
+    roller(216, HY, tape_phase);
+    /* the head */
+    opus_page_frame(138, 34, 182, 114, OPUS_COLOR_E3);
+    opus_page_fill(HX, 34, HX, 48, OPUS_COLOR_E3);
+    opus_page_fill(HX, 100, HX, 114, OPUS_COLOR_E3);
+    /* the rate's grid above: one tick per slice of the beat */
+    for (int i = 0; i < ndiv; i++) { const int x = 96 + i * 128 / ndiv; opus_page_fill(x, 18, x, 21, OPUS_COLOR_E1); }
+    /* the timeline: where the beat is, across the head */
+    int32_t at = (int32_t)shown[pos].slice * len + (shown[pos].pos < len ? shown[pos].pos : len);
+    const int xt = 96 + (int)(((int64_t)at * 128) / ((int64_t)len * ndiv));
+    const int xc = xt < 96 ? 96 : (xt > 224 ? 224 : xt);
+    /* the fragment's box: smaller with more parts, shaking while trapped */
+    const int bw = 6 + 48 / reps, bh = 20;
+    int jx = 0, jy = 0;
+    if (trapped && !frozen) { jx = (int)((part * 5 + (ps >> 6)) % 3) - 1; jy = (int)((part * 3 + (ps >> 7)) % 3) - 1; }
+    const int bx0 = HX - bw / 2 + jx, bx1 = bx0 + bw, by0 = HY - bh / 2 + jy, by1 = by0 + bh;
+    if (trapped) {                                   /* the timeline pinched into the head */
+        opus_page_line(xc, 22, HX, by0 - 1, OPUS_COLOR_E1);
+        opus_page_line(HX, by1 + 1, xc, 128, OPUS_COLOR_E1);
+    } else opus_page_fill(xc, 22, xc, 128, OPUS_COLOR_E1);
+    if (stut) {
+        const int32_t f = shown[pos].fade > 0 ? shown[pos].fade : 1;
+        box_outline(bx0, by0, bx1, by1, soft, OPUS_COLOR_E3);
+        if (mode == M_GATE) {                        /* the gate's shutter: open while the part is open */
+            const int open = ps < shown[pos].duty;
+            if (open) {
+                for (int x = bx0 + 2 + (int)((ps >> 5) % 3); x < bx1 - 1; x += 3) opus_page_fill(x, by0 + 3, x, by1 - 3, OPUS_COLOR_E2);
+            } else opus_page_fill(bx0 + 1, by0 + 1, bx1 - 1, by1 - 1, OPUS_COLOR_E3);
+        } else if (!trapped) {                       /* the first part, being recorded: the box fills */
+            const int w = (int)(((int64_t)(bw - 2) * ps) / sub);
+            if (w > 0) opus_page_fill(bx0 + 1, by1 - 3, bx0 + w, by1 - 2, OPUS_COLOR_E2);
+        } else {                                     /* the repeats: the fragment shakes once per repeat */
+            int32_t rp = ps;                         /* the read position in the part, as the sound reads it */
+            if (mode == M_REVERSE) rp = sub - 1 - ps;
+            else if (mode == M_BRAKE) rp = shown[pos].rd >> 16;
+            if (rp < 0) rp = 0;
+            if (rp >= sub) rp = sub - 1;
+            const int gx = bx0 + 1 + (int)(((int64_t)(bw - 4) * rp) / sub);
+            int32_t e = 32768;                       /* the repeat's own edges, as shape makes them */
+            if (ps < f) e = ps * 32768 / f;
+            if (ps >= sub - f) { const int32_t d = (sub - ps) * 32768 / f; if (d < e) e = d; }
+            const int gh = 3 + (int)((7 * e) >> 15);
+            const int intense = reps >= 8;
+            if (reps >= 6) opus_page_fill(gx - 3 > bx0 ? gx - 3 : bx0 + 1, HY - gh / 2 + jy, gx - 2 > bx0 ? gx - 2 : bx0 + 1, HY + gh / 2 + jy, OPUS_COLOR_DIM);
+            opus_page_fill(gx, HY - gh + jy, gx + 1, HY + gh + jy, intense ? OPUS_COLOR_E4 : OPUS_COLOR_E2);
+            if (part >= 1 && ps < sub / 6 && !frozen) {   /* the catch: sparks off the box (a reversal: on its right) */
+                const int sx = mode == M_REVERSE ? bx1 : bx0, d = mode == M_REVERSE ? 1 : -1;
+                opus_page_line(sx, by0, sx + 4 * d, by0 - 4, OPUS_COLOR_E4);
+                opus_page_line(sx, by1, sx + 4 * d, by1 + 4, OPUS_COLOR_E4);
             }
-            wave[c * 8 + k] = (short)y;
+            if (mode == M_BRAKE)                     /* the playback slowing: the speed under the box */
+                opus_page_fill(bx0, by1 + 3, bx0 + (int)(((int64_t)bw * shown[pos].rate) >> 16), by1 + 3, OPUS_COLOR_E1);
+        }
+        if (frozen) {                                /* FREEZE: the box clamped */
+            opus_page_frame(bx0 - 2, by0 - 2, bx1 + 2, by1 + 2, OPUS_COLOR_E3);
+            opus_page_fill(HX - 4, by0 - 5, HX + 4, by0 - 4, OPUS_COLOR_E3);
+            opus_page_fill(HX - 4, by1 + 4, HX + 4, by1 + 5, OPUS_COLOR_E3);
         }
     }
-    for (int i = 0; i < 4; i++) { v->label[i] = label[i]; v->value[i] = value[i]; }
-    v->wave[0] = wave;
-    v->waves = 1;
-    v->caption = caption;
+    /* the ruler: REPEATS as ticks, the part playing now lit */
+    const int rx0 = HX - 24, rx1 = HX + 24;
+    for (int i = 0; i <= reps; i++) {
+        const int x = rx0 + i * (rx1 - rx0) / reps;
+        opus_page_fill(x, 104, x, 106, OPUS_COLOR_DIM);
+    }
+    if (stut && mode != M_GATE) {
+        const int i = (int)(part % reps), x0 = rx0 + i * (rx1 - rx0) / reps, x1 = rx0 + (i + 1) * (rx1 - rx0) / reps;
+        opus_page_fill(x0 + 1, 105, x1 - 1, 106, OPUS_COLOR_E2);
+    }
+    /* the last 16 slices along the bottom, newest at the right: green stuttered, grey played through */
+    const uint32_t hist = shown[pos].hist;
+    for (int c = 0; c < HIST; c++) {
+        const int x = 96 + c * 8;
+        if ((hist >> (HIST - 1 - c)) & 1) opus_page_fill(x, 122, x + 5, 126, OPUS_COLOR_E2);
+        else opus_page_frame(x, 122, x + 5, 126, OPUS_COLOR_OFF);
+    }
+}
+
+/* under the OS's screen, every frame: only while this type's own page shows (its view ran last frame for this owner) */
+static void frame_under(unsigned short *buf)
+{
+    (void)buf;
+    if (!opus_fx_page_shown() || frames - view_frame > 2 || opus_fx_owner() != view_owner) return;
+    machine(owner_pos(view_owner), page_par);
 }
 
 /* kennel's plugin.json defaults (knob positions 0..32767): rate 17152 (1/16), mode 2304 (repeat), shape 8000, chance
@@ -386,5 +525,8 @@ void *memcpy(void *d, const void *s, unsigned n) { unsigned char *p = d; const u
 
 int opl_init(struct opl_self *self)
 {
-    return opus_effect_register(self, &STUTTER) < 0 ? -1 : 0;
+    if (opus_effect_register(self, &STUTTER) < 0) return -1;
+    opus_on_frame_begin(self, frame_begin);
+    opus_on_frame_under(self, frame_under);
+    return 0;
 }

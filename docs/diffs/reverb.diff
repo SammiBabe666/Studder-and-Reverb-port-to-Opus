@@ -1,6 +1,6 @@
 --- hundekraft-3.1.1/plugins/reverb/reverb.c
 +++ sammi.reverb/reverb.c
-@@ -1,36 +1,48 @@
+@@ -1,36 +1,49 @@
 -/* "reverb" - fixed-point port of the Mutable Instruments Elements reverb (elements/dsp/fx/reverb.h):
 - * Griesinger topology from the Dattorro paper, 4 input allpasses (the first one smeared by an LFO) into a loop
 - * of 2 x (2 allpasses + low-pass + delay), long delay modulated by a slow LFO. Delay lengths scaled from
@@ -43,8 +43,9 @@
 + *   - the master: kennel's dispatcher ran a mono effect on the mono sum m = (L + R) / 2 and added its change y - m to
 + *     both channels (dispatcher.c, fx_render_stereo_dispatch); stereo() below does exactly that;
 + *   - the peak meter word kennel wrote for its screen (op1_fx_meter) is not written: the Opus effect page has no meter;
-+ *   - the screen: Opus effect types draw through the core's effect page (view), not an OS SVG screen; it shows the
-+ *     four values and the tail's decay curve (see view);
++ *   - the screen: the core's effect page shows the four values (view); the picture, "the endless mirror", is drawn
++ *     under the OS's screen (frame_under) from the instance's levels, so the OS's own off overlay dims it (see below);
++ *   - two levels are published for the page after each block (the input's peak, the loop's level): read-only;
 + *   - satb's Blackfin builtin is used on the Blackfin; elsewhere (the host tests) the portable form, as kennel's own
 + *     OP1_HOST build does.
 + *
@@ -74,7 +75,7 @@
  #define RV_WORDS (2 * RV_SIZE + B9 + 1)
  
  typedef struct {
-@@ -40,16 +52,14 @@
+@@ -40,16 +53,14 @@
      int32_t lfo_iir[2], lfo_y0[2], lfo_y1[2], lfo[2];    /* stmlib CosineOscillator (approximate), Q29; lfo Q15 0..1 */
      int32_t k0, f0, k9, f9;                               /* the two LFO taps' whole and fractional offsets */
      int16_t raw[4];                                       /* knob words the coefficients below were made from */
@@ -93,7 +94,7 @@
  static inline int32_t satb(int32_t x, int n) { int32_t h = (int32_t)(0x7fffffff >> n); return x > h ? h : (x < -h - 1 ? -h - 1 : x); }
  #else
  #define satb(x, n) ((int32_t)__builtin_bfin_shl_fr1x32((x), (n)) >> (n))
-@@ -60,9 +70,12 @@
+@@ -60,9 +71,12 @@
  /* a clamped to 17 bits (-65536 .. 65535) times |b| <= 32767: fits 32 bit */
  static inline int32_t m15(int32_t a, int32_t b) { return t15(satb(a, 15) * b); }
  #define sat(x) ((int16_t)satb((x), 16))
@@ -107,7 +108,7 @@
  /* the LFO taps: Interpolate(line, offset + amp * lfo) in Q15, smear ap1 at 7 + 55 lfo1, del2 at 4275 + 69 lfo2 */
  static void lfo_taps(reverb_t *r)
  {
-@@ -71,8 +84,7 @@
+@@ -71,8 +85,7 @@
      r->k9 = B9 + 4275 + (b >> 15); r->f9 = b & 32767;
  }
  
@@ -117,7 +118,7 @@
  static void lfo_step(reverb_t *r)
  {
      for (int k = 0; k < 2; k++) {
-@@ -85,20 +97,12 @@
+@@ -85,20 +98,12 @@
      lfo_taps(r);
  }
  
@@ -141,7 +142,7 @@
  typedef uint32_t __attribute__((may_alias)) rv_u32;
  static inline void zero_words(int16_t *b, int32_t lo, int32_t hi)
  {
-@@ -109,7 +113,7 @@
+@@ -109,7 +114,7 @@
      for (int32_t k = (hi - lo) >> 1; k > 0; k--) *w++ = 0;
  }
  
@@ -150,7 +151,7 @@
  {
      int32_t n = r->zn++, left = 0;
      for (int i = 1; i < 10; i++) {
-@@ -124,17 +128,17 @@
+@@ -124,17 +129,17 @@
      if (!left) r->zn = -1;
  }
  
@@ -172,7 +173,7 @@
          int64_t f = ((int64_t)(k ? 3 : 5) * 32 << 29) / (10LL * 44100);
          int64_t fr = (1LL << 27) - f;
          r->lfo_iir[k] = (int32_t)((16 * fr * ((1LL << 29) - 2 * fr)) >> 29);
-@@ -146,7 +150,7 @@
+@@ -146,7 +151,7 @@
      r->age = 64;
  }
  
@@ -181,7 +182,7 @@
  static inline int32_t mixout(int32_t in, int32_t wet, int32_t amount)
  {
      int32_t o = in + t15(in * -amount) + (((wet >> 3) * amount) >> 12);
-@@ -160,8 +164,6 @@
+@@ -160,8 +165,6 @@
  }
  
  #define WR(o, v) do { const int16_t v_ = (v); q[o] = v_; qn[o] = v_; } while (0)
@@ -190,7 +191,7 @@
  #define AP(B, T) do { const int32_t prev_ = q[T]; acc += t15(MUL16(prev_, kap)); WR(B, sat(acc)); \
                        acc = prev_ - m15(acc, kap); } while (0)
  #define APN(B, T) do { const int32_t prev_ = q[T]; acc -= t15(MUL16(prev_, kap)); WR(B, sat(acc)); \
-@@ -170,7 +172,7 @@
+@@ -170,7 +173,7 @@
  /* 2n samples (n at the reverb's half rate) with the LFO taps fixed; returns the peak */
  static int32_t rv_run(reverb_t *r, int16_t *buf, int n, int32_t peak)
  {
@@ -199,7 +200,7 @@
      int32_t wp = r->wp, lp1 = r->lp1, lp2 = r->lp2, wo = r->wo, we = r->we;
      const int32_t krt = r->krt, amount = r->amount, kap = r->kap, klp = r->klp;
      const int32_t k0 = r->k0, f0 = r->f0, k9 = r->k9, f9 = r->f9;
-@@ -194,7 +196,7 @@
+@@ -194,7 +197,7 @@
          APN(B4, T4);
          AP(B5, T5);
          WR(B6, sat(acc));
@@ -208,7 +209,7 @@
          /* loop half 2 */
          acc = apout + t15(q[T6] * krt);
          lp2 += m15(acc - lp2, klp); acc = lp2;
-@@ -202,10 +204,9 @@
+@@ -202,10 +205,9 @@
          APN(B8, T8);
          WR(B9, sat(acc));
          wet = (wet + acc) * 5;                                         /* mono: 2 L + 2 R, makeup for the 0.2 input */
@@ -221,7 +222,7 @@
          int32_t o0 = mixout(in0, (wo + wet) >> 1, amount), o1 = mixout(in1, wet, amount);
          wo = wet;
          buf[t] = (int16_t)o0; buf[t + 1] = (int16_t)o1;
-@@ -218,88 +219,124 @@
+@@ -218,88 +220,253 @@
      return peak;
  }
  
@@ -299,6 +300,26 @@
 -static void tint(uint8_t *const *c, int n, const uint8_t *rgb, int32_t l)   /* l 0..256 */
 +/* ======================= the Opus effect type ======================= */
 +
++/* What the page shows of the position's instance, written by the audio after each block and read by the display
++ * (single words; a torn read only draws one frame a little off). Nothing here is read back by the sound. */
++static volatile struct { int16_t in, tail; uint32_t blocks; } seen[3];
++
++static inline int32_t peak64(const short *b)
++{
++    int32_t pk = 0;
++    for (int i = 0; i < OP1_FX_BLOCK; i++) { const int32_t a = b[i] < 0 ? -b[i] : b[i]; if (a > pk) pk = a; }
++    return pk;
++}
++static inline int16_t clamp16(int32_t v) { return (int16_t)(v > 32767 ? 32767 : v); }
++/* the tail's level: the loop's two low-pass states after the block (the tank's own signal, read, never written) */
++static void publish(int pos, const reverb_t *r, int32_t in)
++{
++    const int32_t a = r->lp1 < 0 ? -r->lp1 : r->lp1, b = r->lp2 < 0 ? -r->lp2 : r->lp2;
++    seen[pos].in = clamp16(in);
++    seen[pos].tail = clamp16(5 * (a > b ? a : b));          /* x 5: the render's own wet makeup */
++    seen[pos].blocks++;
++}
++
 +static void need(int stereo, struct opus_need *n)
 +{
 +    (void)stereo;
@@ -315,7 +336,26 @@
 +static void mono(struct opus_fx *fx, short *buf, const short *par)
  {
 -    for (int i = 0; i < n; i++) if (c[i]) { c[i][0] = (uint8_t)(rgb[0] * l >> 8); c[i][1] = (uint8_t)(rgb[1] * l >> 8); c[i][2] = (uint8_t)(rgb[2] * l >> 8); }
++    const int pos = opus_instrument_now() == 1 ? 1 : 0;   /* the instrument this block plays: 0 synth, 1 drum */
++    const int32_t in = peak64(buf);
 +    reverb_render((reverb_t *)fx->state, buf, par);
++    publish(pos, (const reverb_t *)fx->state, in);
++}
++
++/* the master, as kennel's dispatcher ran a mono effect there: on m = (L + R) / 2, its change added to both sides */
++static void stereo(struct opus_fx *fx, short *l, short *r, const short *par)
++{
++    int16_t m[OP1_FX_BLOCK], y[OP1_FX_BLOCK];
++    for (int i = 0; i < OP1_FX_BLOCK; i++) y[i] = m[i] = (int16_t)((l[i] + r[i]) >> 1);
++    const int32_t in = peak64(y);
++    reverb_render((reverb_t *)fx->state, y, par);
++    for (int i = 0; i < OP1_FX_BLOCK; i++) {
++        const int32_t d = y[i] - m[i];
++        const int32_t a = l[i] + d, b = r[i] + d;
++        l[i] = (short)(a > 32767 ? 32767 : (a < -32768 ? -32768 : a));
++        r[i] = (short)(b > 32767 ? 32767 : (b < -32768 ? -32768 : b));
++    }
++    publish(2, (const reverb_t *)fx->state, in);
  }
  
 -static void kali_screen_update(void *scr, int dt)
@@ -339,52 +379,131 @@
 -    for (int i = 0; i < 3; i++) if (k_needle[i]) {                     /* needle points left at 0, right at max */
 -        int32_t a = k[kn[i]] * 4096 >> 15;                             /* 0..180 deg (8192 = full turn) */
 -        op1_node_rotate(k_needle[i], px[i], py[i], OP1_SINE_TABLE[a & 8191], OP1_SINE_TABLE[(a + 2048) & 8191]);
-+/* the master, as kennel's dispatcher ran a mono effect there: on m = (L + R) / 2, its change added to both sides */
-+static void stereo(struct opus_fx *fx, short *l, short *r, const short *par)
-+{
-+    int16_t m[OP1_FX_BLOCK], y[OP1_FX_BLOCK];
-+    for (int i = 0; i < OP1_FX_BLOCK; i++) y[i] = m[i] = (int16_t)((l[i] + r[i]) >> 1);
-+    reverb_render((reverb_t *)fx->state, y, par);
-+    for (int i = 0; i < OP1_FX_BLOCK; i++) {
-+        const int32_t d = y[i] - m[i];
-+        const int32_t a = l[i] + d, b = r[i] + d;
-+        l[i] = (short)(a > 32767 ? 32767 : (a < -32768 ? -32768 : a));
-+        r[i] = (short)(b > 32767 ? 32767 : (b < -32768 ? -32768 : b));
-     }
--    op1_screen_draw(scr, dt);
- }
- 
--const op1_screen_t SCREEN_reverb = { kali_screen_init, kali_screen_update };
-+/* Its page: time, tone, diffusion and mix 0-99 (the encoders' order: blue top left, green bottom left, white top
-+ * right, orange bottom right), and in the middle the tail: an impulse's decay through the loop gain and the loop's
-+ * low-pass, as the time and tone knobs set them (each point a quarter of a loop pass; integer only). */
++/* ======================= the page: the endless mirror (display thread) =======================
++ * The core draws the four values in the corners (view); the tunnel is drawn under the OS's screen
++ * (opus_on_frame_under, the layer the stock effects draw on), so the OS's own "off" overlay dims it exactly as it dims
++ * a stock effect's page when the effect is switched off (fx_bypass). Colours are the encoders' (the user's theme):
++ *   blue   E1  the tunnel's structure: the mouth and the rails to the horizon (the depth reference)
++ *   green  E2  the reflections: the tail's level, as it was a frame ago, two frames ago ..., one frame deeper each,
++ *              in four steps (green, grey, dark grey, gone): a long time keeps them lit, a short one lets them go
++ *   white  E3  the horizon point, and the mouth while the dry sound leads (mix)
++ *   orange E4  the dry signal entering: the mouth flashes, and an onset sends one orange frame in
++ * The knobs: tone thins the reflections (full outlines bright, dashes, corners only dark), diffusion doubles them
++ * (spread), mix moves the weight between the mouth (dry) and the reflections (wet). Everything moves only with the
++ * instance's own state (seen[]: written by its audio blocks) and its parameters. */
++#define TX 160                                   /* the horizon point, units */
++#define TY 74
++#define DEPTHS 11
++static int16_t rect[DEPTHS][4];                  /* x0 y0 x1 y1 of each depth's frame, made in opl_init */
++static volatile uint32_t frames;                 /* frame_begin's count */
++static uint32_t view_frame = 0x80000000u;
++static int view_owner = -1;
++static short page_par[8];
++static int16_t hist[DEPTHS];                     /* the tail's level, one frame older per depth */
++static int16_t in_slow;                          /* the input's slow level, for onsets */
++static int32_t pulse = -1;                       /* an onset's depth x 256, or -1 */
++static uint32_t last_blocks;
++static int last_pos = -1;
++
++static void frame_begin(void) { frames++; }
++
 +static int pct(int v) { return (v < 0 ? 0 : v) * 99 / 32767; }
 +
 +static void view(const short *par, struct opus_fx_view *v)
 +{
 +    static const char *const label[4] = { "time", "tone", "diffusion", "mix" };
 +    static char value[4][8];
-+    static short wave[OPUS_FX_WAVE];
-+    static const char caption[] = "hundekraft reverb";
 +    for (int i = 0; i < 4; i++) fw_snprintf(value[i], 8, "%i", pct(par[i]));
-+    reverb_t c;
-+    coefficients(&c, par);
-+    /* the decay per point (a quarter of a loop pass): 1 - (1 - krt) / 4, close to krt^(1/4) (a picture, not the
-+     * sound: the sound is rv_run's) */
-+    const int32_t g = 32768 - ((32768 - c.krt) >> 2);
-+    int32_t env = 30000, lp = 0;
-+    uint32_t x = 0x2545F491u;
-+    for (int i = 0; i < OPUS_FX_WAVE; i++) {
-+        x = x * 1664525u + 1013904223u;                       /* a fixed noise: the same picture every frame */
-+        const int32_t n = ((int32_t)(x >> 16) - 32768) * env >> 15;
-+        lp += (int32_t)(((int64_t)(n - lp) * c.klp) >> 15);   /* the loop's tone */
-+        wave[i] = (short)(lp > 32767 ? 32767 : (lp < -32768 ? -32768 : lp));
-+        env = env * g >> 15;
-+    }
 +    for (int i = 0; i < 4; i++) { v->label[i] = label[i]; v->value[i] = value[i]; }
-+    v->wave[0] = wave;
-+    v->waves = 1;
-+    v->caption = caption;
++    for (int i = 0; i < 8; i++) page_par[i] = par[i];
++    v->waves = 0;                                    /* the middle is the tunnel (frame_under) */
++    v->caption = 0;
++    view_owner = opus_fx_owner();
++    view_frame = frames;
++}
++
++/* an outline in one of three densities: 0 whole, 1 dashed, 2 corners only */
++static void outline(int x0, int y0, int x1, int y1, int style, int colour)
++{
++    if (style == 0) { opus_page_frame(x0, y0, x1, y1, colour); return; }
++    const int w = x1 - x0, h = y1 - y0;
++    const int cx = w < 12 ? 2 : w / 6, cy = h < 12 ? 2 : h / 6;
++    opus_page_fill(x0, y0, x0 + cx, y0, colour); opus_page_fill(x0, y0, x0, y0 + cy, colour);
++    opus_page_fill(x1 - cx, y0, x1, y0, colour); opus_page_fill(x1, y0, x1, y0 + cy, colour);
++    opus_page_fill(x0, y1, x0 + cx, y1, colour); opus_page_fill(x0, y1 - cy, x0, y1, colour);
++    opus_page_fill(x1 - cx, y1, x1, y1, colour); opus_page_fill(x1, y1 - cy, x1, y1, colour);
++    if (style == 1 && w >= 16) {                     /* and a dash in the middle of each side */
++        const int mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
++        opus_page_fill(mx - cx / 2, y0, mx + cx / 2, y0, colour); opus_page_fill(mx - cx / 2, y1, mx + cx / 2, y1, colour);
++        opus_page_fill(x0, my - cy / 2, x0, my + cy / 2, colour); opus_page_fill(x1, my - cy / 2, x1, my + cy / 2, colour);
+     }
+-    op1_screen_draw(scr, dt);
+ }
+ 
+-const op1_screen_t SCREEN_reverb = { kali_screen_init, kali_screen_update };
++static void tunnel(int pos, const short *par)
++{
++    const int32_t tone = par[1] < 0 ? 0 : par[1], diff = par[2] < 0 ? 0 : par[2], mix = par[3] < 0 ? 0 : par[3];
++    /* this frame's levels: only when the instance ran since the last frame (its audio blocks counted); otherwise the
++     * reflections drain away with no new energy, as a silent tail would */
++    if (pos != last_pos) { for (int k = 0; k < DEPTHS; k++) hist[k] = 0; in_slow = 0; pulse = -1; last_pos = pos; last_blocks = seen[pos].blocks; }
++    const uint32_t b = seen[pos].blocks;
++    const int fresh = b != last_blocks;
++    last_blocks = b;
++    const int32_t tail = fresh ? seen[pos].tail : 0, in = fresh ? seen[pos].in : 0;
++    for (int k = DEPTHS - 1; k > 0; k--) hist[k] = hist[k - 1];
++    hist[0] = (int16_t)tail;
++    if (in > 2000 && in > 2 * in_slow && pulse < 0) pulse = 0;   /* an onset: one frame travels in */
++    in_slow = (int16_t)(in_slow + ((in - in_slow) >> 3));
++    /* the stable tunnel: every depth in the unlit grey, the rails and the mouth in blue */
++    for (int k = 1; k < DEPTHS; k++) opus_page_frame(rect[k][0], rect[k][1], rect[k][2], rect[k][3], OPUS_COLOR_OFF);
++    const int16_t *o = rect[0], *f = rect[DEPTHS - 1];
++    opus_page_line(o[0], o[1], f[0], f[1], OPUS_COLOR_E1); opus_page_line(o[2], o[1], f[2], f[1], OPUS_COLOR_E1);
++    opus_page_line(o[0], o[3], f[0], f[3], OPUS_COLOR_E1); opus_page_line(o[2], o[3], f[2], f[3], OPUS_COLOR_E1);
++    /* the reflections: the tail's history, deeper = older, in four steps; mix shifts the steps (wet up, dry down) */
++    const int style = tone > 21845 ? 0 : (tone > 10922 ? 1 : 2);
++    const int spread = diff > 21845 ? 2 : (diff > 10922 ? 1 : 0);
++    const int shift = mix > 24576 ? 1 : (mix < 8192 ? -1 : 0);
++    for (int k = 1; k < DEPTHS; k++) {
++        const int32_t h = hist[k];
++        int step = h > 12000 ? 3 : h > 4000 ? 2 : h > 1200 ? 1 : h > 300 ? 0 : -1;
++        if (step >= 0) step += shift;
++        if (step < 0) continue;
++        if (step > 3) step = 3;
++        const int colour = step >= 2 ? OPUS_COLOR_E2 : (step == 1 ? OPUS_COLOR_DIM : OPUS_COLOR_OFF);
++        const int16_t *q = rect[k];
++        outline(q[0], q[1], q[2], q[3], style, colour);
++        if (step == 3 && spread && k <= 4)            /* diffusion: the strong near reflections smear into a double outline */
++            outline(q[0] - spread, q[1] - spread, q[2] + spread, q[3] + spread, style ? 2 : 0, colour);
++    }
++    /* the onset travelling in: orange while it enters, then a green reflection, gone at the horizon */
++    if (pulse >= 0) {
++        const int k = pulse >> 8;
++        if (k < DEPTHS - 1) {
++            const int16_t *q = rect[k];
++            opus_page_frame(q[0], q[1], q[2], q[3], k < 2 ? OPUS_COLOR_E4 : OPUS_COLOR_E2);
++            pulse += 160 + (int32_t)(32767 - (par[0] < 0 ? 0 : par[0])) / 128;   /* a short time travels faster */
++        } else pulse = -1;
++    }
++    /* the mouth: the dry foreground; white and doubled while the dry leads, orange on the input's peaks */
++    const int dry = mix < 16384;
++    const int mouth = in > 8000 ? OPUS_COLOR_E4 : (dry ? OPUS_COLOR_E3 : OPUS_COLOR_E1);
++    opus_page_frame(o[0], o[1], o[2], o[3], mouth);
++    if (dry) opus_page_frame(o[0] + 1, o[1] + 1, o[2] - 1, o[3] - 1, mouth);
++    /* the horizon point: white, a little larger while the tail is strong */
++    opus_page_fill(TX - 1, TY - 1, TX + 1, TY + 1, OPUS_COLOR_E3);
++    if (tail > 12000) opus_page_frame(TX - 3, TY - 3, TX + 3, TY + 3, OPUS_COLOR_E3);
++}
++
++/* the effect page's owner (0-7 the synth's slots, 8-15 the drum's, 16 the master) as a position */
++static int owner_pos(int o) { return o >= 16 ? 2 : (o >= 8 ? 1 : 0); }
++
++/* under the OS's screen, every frame: only while this type's own page shows (its view ran last frame for this owner) */
++static void frame_under(unsigned short *buf)
++{
++    (void)buf;
++    if (!opus_fx_page_shown() || frames - view_frame > 2 || opus_fx_owner() != view_owner) return;
++    tunnel(owner_pos(view_owner), page_par);
 +}
 +
 +/* kennel's plugin.json defaults (knob positions 0..32767): time 16000, tone 20000, diffusion 16384, mix 12000.
@@ -416,5 +535,16 @@
 +
 +int opl_init(struct opl_self *self)
 +{
-+    return opus_effect_register(self, &REVERB) < 0 ? -1 : 0;
++    /* the tunnel's depths: each frame 0.74 of the one before, around the horizon point (integer only) */
++    int32_t s = 1024;
++    for (int k = 0; k < DEPTHS; k++) {
++        const int32_t hw = (64 * s) >> 10, hh = (56 * s) >> 10;
++        rect[k][0] = (int16_t)(TX - hw); rect[k][1] = (int16_t)(TY - hh);
++        rect[k][2] = (int16_t)(TX + hw); rect[k][3] = (int16_t)(TY + hh);
++        s = s * 758 >> 10;
++    }
++    if (opus_effect_register(self, &REVERB) < 0) return -1;
++    opus_on_frame_begin(self, frame_begin);
++    opus_on_frame_under(self, frame_under);
++    return 0;
 +}

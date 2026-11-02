@@ -32,11 +32,12 @@ export BFIN_RUN=$HOME/bfin-tc/build/sim/sim/bfin/run
 sh tools/build.sh                 # the two .opmod files -> build/opus/, read back with plugin_tool.py show
 sh tests/host/run.sh              # host tests (ASan + UBSan): differential, port checks, analysis
 sh tests/bfin_sim/run.sh          # the compiled code in the simulator: against the originals, cycles
+sh tools/previews.sh              # the pages' previews -> docs/media (needs Pillow)
 sh tools/release.sh               # all of the above, results/ refreshed, release/ assembled (make_release.py)
 ```
 
 `release.sh` writes `release/sammi.reverb.opmod`, `release/sammi.stutter.opmod`, `release/SHA256SUMS.txt` and
-`release/sammi-reverb-stutter-1.0.0.zip` (fixed timestamps: the same files give the same ZIP).
+`release/sammi-reverb-stutter-1.1.0.zip` (fixed timestamps: the same files give the same ZIP).
 
 ## Layout
 

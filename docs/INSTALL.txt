@@ -1,4 +1,4 @@
-sammi.reverb and sammi.stutter 1.0.0 - Hundekraft's Reverb and STUTTER as Opus 2 plugins for the original OP-1
+sammi.reverb and sammi.stutter 1.1.0 - Hundekraft's Reverb and STUTTER as Opus 2 plugins for the original OP-1
 ==================================================================================================================
 
 NOT YET TESTED ON AN OP-1. Both plugins build with the Opus plugin kit, and their sound is bit-identical to
@@ -6,7 +6,7 @@ Hundekraft's originals on a PC and as compiled Blackfin code in a simulator. The
 CPU load have not been tried on hardware. Developer mode on for the first tries (step 1).
 
 You need: an original OP-1 (not the OP-1 field) on firmware 246 with Opus 2 installed (the Opus site's patcher makes
-the update from your own op1_246.op1). Both plugins need core 2.0 or later, which every Opus 2 release has.
+the update from your own op1_246.op1). Both plugins need core 2.2 or later.
 
 1. Developer mode (for the first tries): open Opus's menu (hold synth + drum + tape + mixer together), T1 for the
    system settings, switch "developer mode" on. While it is on, a plugin that crashes is not left out at the next
@@ -24,7 +24,8 @@ If something goes wrong: a plugin that crashes the OP-1 is left out at the next 
 developer mode). Holding Stop while switching the OP-1 on starts it with no plugins at all; then delete the file from
 the mods folder in disk mode. Opus never touches te-boot, the OP-1's own update and recovery mode.
 
-Controls: README.md ("The controls"), or docs/CONTROLS.md.
+Off: switched off with T3, the page dims under the OS's own off overlay, as a stock effect's does.
+The pages: docs/VISUALS.md. Controls: README.md ("The controls"), or docs/CONTROLS.md.
 Checksums: SHA256SUMS.txt (sha256sum -c SHA256SUMS.txt).
 Source, tests and build: the source/ folder; licence GPL-3.0-or-later with the OP-1 firmware permission (LICENSE,
 NOTICE, NOTICE.kennel, LICENSE.elements).

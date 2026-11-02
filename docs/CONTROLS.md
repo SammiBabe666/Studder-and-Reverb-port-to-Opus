@@ -24,8 +24,8 @@ summed.
 | white | diffusion | the allpasses' gain: grainy to smooth | 0.5 to 0.75 | 16384 (49) |
 | orange | mix | dry to wet | 0 to 1 | 12000 (36) |
 
-The page shows the four values from 0 to 99, a picture of the tail (an impulse decaying through the loop gain and the
-loop's low-pass, as time and tone set them), and the caption "hundekraft reverb".
+The page shows the four values from 0 to 99 in the corners and, in the middle, **the endless mirror**: a tunnel of
+nested frames whose reflections are the tail's own level, receding inward ([VISUALS.md](VISUALS.md)).
 
 **On the master** the tank hears the mono sum (L + R) / 2. What it adds is put in the middle, on both sides, and the
 dry stereo image stays exactly as it was. This is how kennel ran its mono effects on the master; it is the original's
@@ -46,8 +46,8 @@ part until the slice ends, so the repeats always land on the grid.
 | green | mode | **repeat**: plain repeats. **brake**: each repeat 12 % slower and lower, down to 30 %, a tape stop. **reverse**: the repeats backwards. **gate**: no repeats, the slice chopped into short bursts of the live sound | 4 | 2304 (repeat) |
 | white | shape | the edge softness of each repeat: 2 to 12 ms fades. In **gate**: the open time, 10 to 90 % | continuous | 8000 |
 | orange | chance | how many slices stutter: none to all | continuous | 12000 (36 %) |
-| **shift + blue** | (caption) "N parts" | **REPEATS**: how many parts a stuttering slice is cut into. One step per detent, round and round | 2, 3, 4, 6, 8, 16 | 4 |
-| **shift + orange** | (caption) "freeze" | **FREEZE**: clockwise on, anticlockwise off. Keeps repeating the part playing now, across slices, until you switch it off | on / off | off |
+| **shift + blue** | (the ruler's ticks) | **REPEATS**: how many parts a stuttering slice is cut into. One step per detent, round and round | 2, 3, 4, 6, 8, 16 | 4 |
+| **shift + orange** | (the box's clamps) | **FREEZE**: clockwise on, anticlockwise off. Keeps repeating the part playing now, across slices, until you switch it off | on / off | off |
 
 - **REPEATS** is the sound's parameter 5, saved with the sound, as kennel saved its page-2 word.
 - **FREEZE** is per effect position (synth, drum, master) and is not saved with the sound. That is kennel's
@@ -56,11 +56,10 @@ part until the slice ends, so the repeats always land on the grid.
   a shift layer but no encoder-press handler, so the port puts them on shift + turn. The mods list shows them on the
   plugin's controls page (green push). They are declared `modal`, so they never clash with another plugin's controls.
 
-The page shows:
-- rate, mode, shape (the fade in ms, or the gate's open time in %) and chance;
-- the original's "projected picture": the last 16 slices, newest at the right. A slice that stuttered is a tall bar
-  (repeat full, brake stepping down, reverse slanted, gate dashed); one that played through is a short stub;
-- the caption: the number of parts, and "freeze" while frozen.
+The page shows rate, mode, shape (the fade in ms, or the gate's open time in %) and chance in the corners and, in
+the middle, **the defective tape head**: the timeline, the tape and the fragment trapped in the head, drawn from the
+DSP's own slice, part and mode, the ruler of parts, FREEZE's clamps and the last 16 slices
+([VISUALS.md](VISUALS.md)).
 
 **Tempo:** the grid follows the OP-1's tempo: the BPM setting or MIDI clock, through the stock metronome's beat
 clock, whether the metronome is heard or not. While the clock follows the tape, it also follows the tape's speed.

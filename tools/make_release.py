@@ -11,12 +11,12 @@ import sys
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 NAME = f"sammi-reverb-stutter-{VERSION}"
 PLUGINS = ["sammi.reverb.opmod", "sammi.stutter.opmod"]
 TOP = ["README.md", "LICENSE", "LICENSE.elements", "NOTICE", "NOTICE.kennel"]
 TREES = ["docs", "results", "plugins", "tests", "tools", "third_party"]
-STAMP = (2026, 11, 1, 0, 0, 0)
+STAMP = (2026, 11, 2, 0, 0, 0)
 
 
 def sha(path):
@@ -42,6 +42,8 @@ def main():
         for d, dirs, files in os.walk(base):
             dirs[:] = sorted(x for x in dirs if x not in ("__pycache__",))
             for f in sorted(files):
+                if f.endswith(".gif"):              # the animated previews stay in the repository, not the ZIP
+                    continue
                 full = os.path.join(d, f)
                 arc = os.path.relpath(full, ROOT).replace(os.sep, "/")
                 entries.append(((("source/" if tree in ("plugins", "tests", "tools", "third_party") else "") + arc), full))

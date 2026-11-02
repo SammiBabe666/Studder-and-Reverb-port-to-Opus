@@ -1,13 +1,15 @@
 # sammi.stutter: Hundekraft's STUTTER (OP-1 Workshop 3.1.1), a beat-locked stutter, ported as a native effect type
 # for the synth, the drum and the master. blue rate, green mode, white shape, orange chance; on its own page
 # shift + blue sets the repeats (2-16), shift + orange freezes (clockwise on, anticlockwise off).
+# Its page's picture (the defective tape head) is drawn under the OS's screen, so the OS's off overlay dims it.
+# core 2.2: opus_instrument_now, opus_fx_owner, opus_fx_page_shown (the managers' service).
 # Deep, read-only: the metronome's beat clock and the tape's speed at firmware #246's addresses (as kennel reads them).
 opmod     1
 id        sammi.stutter
 name      Stutter
 author    sammi
-version   1.0.0
-core      2.0
+version   1.1.0
+core      2.2
 adds      effect hkstutter
 uses      blue_turn shift modal "repeats on its fx page"
 uses      orange_turn shift modal "freeze on its fx page"

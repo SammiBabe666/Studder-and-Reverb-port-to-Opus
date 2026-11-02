@@ -1,41 +1,45 @@
-/home/claude/studder-and-reverb-port-to-opus/build/opus/sammi.reverb.opmod: sammi.reverb 1.0.0, 4132 bytes, imports fw_snprintf, opus_effect_register; 2968 bytes, 288 zero fill, 40 relocations (15 hi, 2 hi import, 15 lo, 2 lo import, 6 word)
+/home/claude/studder-and-reverb-port-to-opus/build/opus/sammi.reverb.opmod: sammi.reverb 1.1.0, 7080 bytes, imports fw_snprintf, opus_effect_register, opus_fx_owner, opus_fx_page_shown, opus_instrument_now, opus_on_frame_begin, opus_on_frame_under, opus_page_fill, opus_page_frame, opus_page_line; 4708 bytes, 192 zero fill, 110 relocations (42 hi, 10 hi import, 42 lo, 10 lo import, 6 word)
 # sammi.reverb: Hundekraft's reverb (OP-1 Workshop 3.1.1, the Elements / Dattorro tank), ported as a native effect
 # type for the synth, the drum and the master. blue time, green tone, white diffusion, orange mix.
 # No uses lines: the encoders turn its parameters on its effect page, as on a stock effect's.
+# Its page's picture (the endless mirror) is drawn under the OS's screen, so the OS's off overlay dims it.
+# core 2.2: opus_instrument_now, opus_fx_owner, opus_fx_page_shown (the managers' service).
 opmod     1
 id        sammi.reverb
 name      Reverb
 author    sammi
-version   1.0.0
-core      2.0
+version   1.1.0
+core      2.2
 adds      effect hkreverb
 # built by op1mod plugin
 deep      fw_snprintf
-ram       image 2968 zero 288
-imports   2
+ram       image 4708 zero 192
+imports   10
 cpu       unmeasured
 checked: none (no checked line: not recorded as tested)
-image 2968 bytes, zero fill 288, entry +0x9f8, 40 relocations, imports: fw_snprintf, opus_effect_register
-/home/claude/studder-and-reverb-port-to-opus/build/opus/sammi.stutter.opmod: sammi.stutter 1.0.0, 8204 bytes, imports fw_snprintf, opus_effect_register, opus_fx_owner, opus_instrument_now; 5944 bytes, 376 zero fill, 107 relocations (41 hi, 4 hi import, 41 lo, 4 lo import, 17 word)
+image 4708 bytes, zero fill 192, entry +0x1054, 110 relocations, imports: fw_snprintf, opus_effect_register, opus_fx_owner, opus_fx_page_shown, opus_instrument_now, opus_on_frame_begin, opus_on_frame_under, opus_page_fill, opus_page_frame, opus_page_line
+/home/claude/studder-and-reverb-port-to-opus/build/opus/sammi.stutter.opmod: sammi.stutter 1.1.0, 11568 bytes, imports fw_snprintf, opus_effect_register, opus_fx_owner, opus_fx_page_shown, opus_instrument_now, opus_on_frame_begin, opus_on_frame_under, opus_page_dot, opus_page_fill, opus_page_frame, opus_page_line, opus_sincos; 8652 bytes, 248 zero fill, 131 relocations (45 hi, 12 hi import, 45 lo, 12 lo import, 17 word)
 # sammi.stutter: Hundekraft's STUTTER (OP-1 Workshop 3.1.1), a beat-locked stutter, ported as a native effect type
 # for the synth, the drum and the master. blue rate, green mode, white shape, orange chance; on its own page
 # shift + blue sets the repeats (2-16), shift + orange freezes (clockwise on, anticlockwise off).
+# Its page's picture (the defective tape head) is drawn under the OS's screen, so the OS's off overlay dims it.
+# core 2.2: opus_instrument_now, opus_fx_owner, opus_fx_page_shown (the managers' service).
 # Deep, read-only: the metronome's beat clock and the tape's speed at firmware #246's addresses (as kennel reads them).
 opmod     1
 id        sammi.stutter
 name      Stutter
 author    sammi
-version   1.0.0
-core      2.0
+version   1.1.0
+core      2.2
 adds      effect hkstutter
 uses      blue_turn shift modal "repeats on its fx page"
 uses      orange_turn shift modal "freeze on its fx page"
 # built by op1mod plugin
 deep      fw_snprintf
-ram       image 5944 zero 376
-imports   4
+ram       image 8652 zero 248
+imports   12
 cpu       unmeasured
 checked: none (no checked line: not recorded as tested)
-image 5944 bytes, zero fill 376, entry +0xbb4, 107 relocations, imports: fw_snprintf, opus_effect_register, opus_fx_owner, opus_instrument_now
-d5d23f0b07cbc04282dd8aa7f83cf648e3cbba081859c965213de8583985b5da  sammi.reverb.opmod
-d3be049b2fa1fe8b85759cb34899f00a51ffc53726c5605f256b5d89f8aea3c4  sammi.stutter.opmod
+image 8652 bytes, zero fill 248, entry +0x15e4, 131 relocations, imports: fw_snprintf, opus_effect_register, opus_fx_owner, opus_fx_page_shown, opus_instrument_now, opus_on_frame_begin, opus_on_frame_under, opus_page_dot, opus_page_fill, opus_page_frame, opus_page_line, opus_sincos
+54e6e311b5c0d90b521e253ae033a0a878bf533b735ccaad6869eeb62e527d64  sammi.reverb.opmod
+3a6f268df050071c66278a09758c70e838632788673759327328519eee2ae8ff  sammi.stutter.opmod
