@@ -1,7 +1,7 @@
 #!/bin/sh
 # Every check, the build and the release in one go:
-#   KENNEL=.../hundekraft-3.1.1-source/ext/kennel OPUS_KIT=.../opus/plugin-kit BFIN_RUN=.../bfin/run \
-#       PATH=/path/to/bfin/bin:$PATH sh tools/release.sh
+#   KENNEL=.../hundekraft-3.1.1-source/ext/kennel OPUS_KIT=.../opus/plugin-kit BFIN_RUN=$HOME/mnt/Documents/op1-toolchain/bfin/bin/bfin-elf-run \
+#       PATH=$HOME/mnt/Documents/op1-toolchain/bfin/bin:$PATH sh tools/release.sh
 # 1. tests/host/run.sh (ASan + UBSan: the ports against Hundekraft's originals, the port checks, the analysis)
 # 2. tests/bfin_sim/run.sh (the compiled ports in the Blackfin simulator against the originals; cycles)
 # 3. tools/build.sh (the .opmod files with the Opus kit)

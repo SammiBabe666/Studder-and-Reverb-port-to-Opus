@@ -12,22 +12,16 @@ You don't need any of this to use the plugins: `release/` has them ready.
   cd op1-workshop/source && sha256sum -c hundekraft-3.1.1-source.tar.gz.sha256 && tar xzf hundekraft-3.1.1-source.tar.gz
   # KENNEL=$PWD/hundekraft-3.1.1-source/ext/kennel
   ```
-- **The Blackfin compiler** (`bfin-elf-gcc` 13.3.0 + binutils). Either the kit's own recipe, if you can reach
-  ftp.gnu.org:
-  ```sh
-  WORK=$HOME/bfin-build bash $OPUS_KIT/tools/toolchain/build-bfin-toolchain.sh fetch verify extract linux
-  ```
-  or, from git sources only (what was used here; about an hour on two cores):
-  ```sh
-  sh tools/toolchain/build_toolchain.sh $HOME/bfin-tc        # -> $HOME/bfin-tc/bfin/bin
-  sh tools/toolchain/build_sim.sh $HOME/bfin-tc              # the simulator -> $HOME/bfin-tc/build/sim/sim/bfin/run
-  ```
+- **The Blackfin compiler and simulator** (`bfin-elf-gcc` 13.3.0 + binutils 2.38 as the Opus kit specifies, and the
+  simulator `bfin-elf-run`): the shared toolchain at `~/mnt/Documents/op1-toolchain`, used by every OP-1 project. This
+  repository does not build a compiler; the shared one is built by the Opus kit's own recipe
+  (`op1-toolchain/recipe/build-opus-toolchain.sh`), see its README.
 
 ## Commands
 
 ```sh
-export PATH=$HOME/bfin-tc/bfin/bin:$PATH OPUS_KIT=/path/opus/plugin-kit KENNEL=/path/hundekraft-3.1.1-source/ext/kennel
-export BFIN_RUN=$HOME/bfin-tc/build/sim/sim/bfin/run
+. ~/mnt/Documents/op1-toolchain/env.sh          # OP1_BFIN_TOOLCHAIN, PATH, BFIN_RUN
+export OPUS_KIT=/path/opus/plugin-kit KENNEL=/path/hundekraft-3.1.1-source/ext/kennel
 
 sh tools/build.sh                 # the two .opmod files -> build/opus/, read back with plugin_tool.py show
 sh tests/host/run.sh              # host tests (ASan + UBSan): differential, port checks, analysis
@@ -48,7 +42,7 @@ third_party/               Hundekraft's original reverb.c, stutter.c and plugin.
 tests/host/                scenario.h (shared scenarios), orig_runner.c, port_runner.c, port_checks.c, analysis.py,
                            opus_mock.h, harness/op1_host.h (op1r's mocks), run.sh
 tests/bfin_sim/            bfin_runner.c, start.S, sim.ld, run.sh
-tools/                     build.sh, release.sh, make_release.py, toolchain/ (build_toolchain.sh, build_sim.sh)
+tools/                     build.sh, release.sh, make_release.py
 docs/                      CONTROLS.md, TESTING.md, MODIFICATIONS.md, BUILDING.md, INSTALL.txt, diffs/
 results/                   the logs of the last tools/release.sh
 release/                   the files to install, their checksums and the ZIP

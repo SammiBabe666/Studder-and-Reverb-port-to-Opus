@@ -21,9 +21,10 @@ pictures ([VISUALS.md](VISUALS.md)) and corrects the `core` line to 2.2; every t
 ## The toolchain
 
 `bfin-elf-gcc` 13.3.0 with binutils 2.42 (the espressif fork's tag `binutils-2_42`), built from git sources with
-`tools/toolchain/build_toolchain.sh` (from Project_Hollow_Saint): ftp.gnu.org could not be reached from the build
+`build_toolchain.sh` (from Project_Hollow_Saint; removed from this repository in 1.1.0's audit): ftp.gnu.org could not be reached from the build
 machine. That is the compiler version the Opus kit names. The simulator is binutils-gdb's `sim/bfin`, built from the
-same tree with `tools/toolchain/build_sim.sh`.
+same tree with `build_sim.sh`. Builds since 2026-11-03 use the shared toolchain instead (`~/mnt/Documents/op1-toolchain`:
+GCC 13.3.0 + binutils 2.38, built by the Opus kit's own recipe); see "Opus version" below for that build.
 
 The Opus plugin kit is LizardMan245/opus at commit `d7f28b0` (2026-10-31). Hundekraft's source is OP-1 Workshop 3.1.1
 (`hundekraft-3.1.1-source.tar.gz`, sha256 `831f0aa0…299f9e`, the published checksum; Workshop commit `d30fc52`).
@@ -208,6 +209,25 @@ the images (3 KB, 6 KB). Each extra instance a manager makes adds one bulk. Neit
 simulated off overlay): `docs/media/*.png`, `*.gif`. See [VISUALS.md](VISUALS.md#what-the-previews-are). They are
 renderings, not captures from an OP-1.
 
+## Opus version (audited 2026-11-03)
+
+Built against the Opus plugin kit **v2.0-beta.3.2** (the release called "beta 3.2"; its newest core is 2.13): kit
+commit `d7f28b0`, whose `plugin-kit/` is byte-identical to the tag `v2.0-beta.3.2` (`1de3ff4`). Beta 3.2 changed no
+declaration in `opus_plugin.h` or `op1fw.h` (only comments: compared with comments stripped) and no build behaviour;
+it added `tools/crashlog.py`. Nothing the plugins call is deprecated. Their manifests' `core 2.2` is the lowest core
+whose services they use (`opus_fx_owner`, `opus_fx_page_shown`, `opus_instrument_now`), which is what the line means,
+so it was not raised: a beta 3.2 core (2.13) loads them.
+
+**The build with the shared toolchain (2026-11-03, on the Mac's Linux shell):** `bfin-elf-gcc` 13.3.0 + binutils
+2.38 (`~/mnt/Documents/op1-toolchain`, the Opus kit's own versions), the beta 3.2 kit as vendored in The Bronze
+Choir (`third_party/opus-plugin-kit`: SDK headers, `plugin_tool.py` and the build's flags identical to the tag;
+only its messages point at the shared toolchain and its compiler recipe is removed):
+- `tools/build.sh`: both `.opmod` files byte-identical to `release/` (sha256 `54e6e311…` reverb, `3a6f268d…` stutter);
+- `tests/bfin_sim` in the shared simulator (`bfin-elf-run`): outputs identical to Hundekraft's originals
+  (`59f044bd…`, 4,147,200 bytes; `1c186447…`, 11,390,464 bytes) and the same cycle counts as below, cycle for cycle;
+- one incompatibility found and fixed: the simulator test's link used `-Wl,--no-warn-rwx-segments`, which binutils
+  2.38 does not know (it came in 2.39); `tests/bfin_sim/run.sh` now passes it only when the linker has it.
+
 ## What to try on the OP-1 (and then record with a `checked device` line in each manifest)
 
 1. **Load:** both rows say "loaded", with developer mode off as well as on.
@@ -228,3 +248,6 @@ renderings, not captures from an OP-1.
    switch off and on.
 6. **Next to other plugins:** the starter pack and opus.bridge.
 7. **CPU:** the measurement above.
+8. **If the OP-1 crashes** (beta 3.2's crash logs): in disk mode the `crash` folder holds `N.txt`; read it with the
+   kit's `python tools/crashlog.py N.txt --plugin sammi.reverb=build/opus/sammi.reverb.build/plugin_0.elf` (or
+   `sammi.stutter=...`), which names the plugin's functions, and attach it to a report.

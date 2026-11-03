@@ -149,9 +149,10 @@ manifest as `modal`, so they never clash with another plugin.
 ## Building and testing
 
 [docs/BUILDING.md](docs/BUILDING.md). In short, with the Opus kit, Hundekraft's 3.1.1 source, a `bfin-elf-gcc` 13.3
-toolchain and the Blackfin simulator (`tools/toolchain/` builds both from git sources):
+toolchain and the Blackfin simulator, both from the shared `~/mnt/Documents/op1-toolchain` (this repository does not build them):
 
 ```sh
+. ~/mnt/Documents/op1-toolchain/env.sh
 sh tools/release.sh     # host tests, simulator tests, the .opmod build, results/, release/
 ```
 

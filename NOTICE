@@ -21,8 +21,9 @@ WHERE THE CODE COMES FROM
   (sha256 234660de...b441). The beat clock reader follows kennel's op1_plugin.h (op1_beat_clock).
 - third_party/: the two original files and their plugin.json manifests, unchanged, for reference and for the tests.
 - tests/host/harness/op1_host.h: op1r-src's host mocks (pcppcp), unchanged, as carried by Project_Hollow_Saint.
-- tests/bfin_sim/start.S, sim.ld and tools/toolchain/: from Project_Hollow_Saint (the hollow_saint authors,
-  GPL-3.0-or-later). The toolchain script fetches binutils, GCC, GMP, MPFR, MPC and flex, which keep their own licences.
+- tests/bfin_sim/start.S and sim.ld: from Project_Hollow_Saint (the hollow_saint authors, GPL-3.0-or-later). The
+  repository builds no compiler: it uses the shared toolchain (~/mnt/Documents/op1-toolchain, built by the Opus
+  kit's own recipe); the git-source toolchain scripts it once carried (tools/toolchain/) were removed.
 - The Opus 2 headers (opus_plugin.h, op1fw.h) and plugin_tool.py are LizardMan's Opus plugin kit
   (https://github.com/LizardMan245/opus, plugin-kit, GPL-3.0); they are used to build, not copied here.
 

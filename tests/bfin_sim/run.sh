@@ -1,8 +1,8 @@
 #!/bin/sh
 # The ports' compiled Blackfin code in the instruction-set simulator: its output against Hundekraft's original on the
 # PC (byte for byte, the same scenarios as tests/host), and its cycles per process call.
-#   KENNEL=.../hundekraft-3.1.1-source/ext/kennel OPUS_KIT=.../opus/plugin-kit BFIN_RUN=/path/to/bfin-elf-run \
-#       PATH=/path/to/bfin/bin:$PATH sh tests/bfin_sim/run.sh [OUT]
+#   KENNEL=.../hundekraft-3.1.1-source/ext/kennel OPUS_KIT=.../opus/plugin-kit BFIN_RUN=$HOME/mnt/Documents/op1-toolchain/bfin/bin/bfin-elf-run \
+#       PATH=$HOME/mnt/Documents/op1-toolchain/bfin/bin:$PATH sh tests/bfin_sim/run.sh [OUT]
 # Compiled with the Opus kit's own flags (tools/op1mod/build.py CFLAGS), as plugin_tool.py build does.
 # Copyright (C) 2026 sammi. GPL-3.0-or-later with the OP-1 firmware permission.
 set -eu
@@ -16,6 +16,9 @@ T=$ROOT/tests/host
 mkdir -p "$B"
 F="-mcpu=bf524-any -O2 -ffreestanding -fno-builtin -Wall -Wextra -Werror"     # = the Opus kit's CFLAGS
 M="--environment virtual --model bf524 --memory-region 0x0,0x4000000 --memory-region 0xFF800000,0x8000"
+# binutils 2.39+ warns about the RWX segment of this bare-metal image; 2.38 (the shared toolchain's) has no such
+# warning and no option to silence it: pass the option only when the linker knows it
+LDW=""; bfin-elf-ld --help 2>/dev/null | grep -q -- --no-warn-rwx-segments && LDW="-Wl,--no-warn-rwx-segments"
 bfin-elf-gcc $F -c "$HERE/start.S" -o "$B/start.o"
 fail=0
 for e in reverb stutter; do
@@ -24,7 +27,7 @@ for e in reverb stutter; do
     for mode in dump cycles; do
         C=""; [ $mode = cycles ] && C=-DSIM_CYCLES
         bfin-elf-gcc $F -Wno-unused-function $D $C -DEFFECT_SRC="\"$SRC\"" -I "$KIT/sdk" -I "$T" -c "$HERE/bfin_runner.c" -o "$B/${e}_$mode.o"
-        bfin-elf-gcc -mcpu=bf524-any -nostdlib -Wl,--no-warn-rwx-segments -T "$HERE/sim.ld" "$B/start.o" "$B/${e}_$mode.o" -lgcc -o "$B/${e}_$mode.elf"
+        bfin-elf-gcc -mcpu=bf524-any -nostdlib $LDW -T "$HERE/sim.ld" "$B/start.o" "$B/${e}_$mode.o" -lgcc -o "$B/${e}_$mode.elf"
     done
     "$RUN" $M "$B/${e}_dump.elf" > "$B/bfin_$e.raw"
     "$RUN" $M "$B/${e}_cycles.elf" | tee "$B/cycles_$e.txt"
