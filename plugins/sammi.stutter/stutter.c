@@ -62,6 +62,10 @@ typedef struct {
 #ifdef STUTTER_HOST
 extern op1_beat_t host_beat;                                   /* tests/host sets it */
 static inline void beat_clock(op1_beat_t *b) { *b = host_beat; }
+#elif defined(STUTTER_NO_DEEP)
+/* The build with no deep reads at all (-DSTUTTER_NO_DEEP): no clock, so the grid always runs on at 120 BPM. The
+ * fallback build for a firmware or core where the addresses below are known not to hold the clock. */
+static inline void beat_clock(op1_beat_t *b) { b->len = 0; b->next = 0; b->step = 0x100000; b->tape_pos = 0; b->follows_tape = 0; }
 #else
 static inline void beat_clock(op1_beat_t *b)
 {
@@ -69,11 +73,61 @@ static inline void beat_clock(op1_beat_t *b)
     b->len = *(const volatile int32_t *)(m + 0x1C);
     b->next = *(const volatile int32_t *)(m + 0x20);
     b->follows_tape = m[0x14];
-    uint32_t sp = *(const volatile uint32_t *)0xFF802970;       /* tape speed: phase step (sp >> 21) << 14 */
+    uint32_t sp = b->follows_tape == 1 ? *(const volatile uint32_t *)0xFF802970 : 0;  /* tape speed: (sp >> 21) << 14 */
     b->step = b->follows_tape ? (int32_t)((sp >> 21) << 14) : 0x100000;
-    b->tape_pos = *(const volatile int32_t *)0xFF802974 >> 6;  /* 1/64 samples */
+    b->tape_pos = 0;        /* this port (1.2): kennel's tape position read (0xFF802974) is gone; nothing used it */
 }
 #endif
+
+/* ---- the clock guard (this port, 1.2): the deep read checks itself ----
+ * The addresses above are firmware #246's as kennel documents them; nothing in Opus vouches for them, and a later
+ * core may keep other data there. So the reading is only trusted while it behaves like a clock: from block to block,
+ * at the same beat length, the time to the next beat counts down by the clock's step (0 to 2 steps, for a clock
+ * updated in another thread) or wraps once at the beat. Each such block counts +1; a jump, a reading that stands
+ * still for 4 blocks while it should move, or an impossible value counts -16; a new beat length -1 (a tempo turn or
+ * MIDI clock moves it a few times a second, garbage every block). Under GUARD_OFF the reading is set aside: the grid
+ * runs on by itself at the last beat length a trusted clock gave (score at GUARD_ON or more; else 120 BPM), and the
+ * reading comes back at GUARD_ON. A real
+ * clock stays trusted (a tape restart or a tempo turn costs one block); a wrong address is out within about 0.05 s
+ * if it stands still (0.1 s after a long trusted run) and 0.2 s if it changes every block. With a real clock the sound is the original's, byte for
+ * byte (tests/host: the differential test runs through the guard). */
+#define GUARD_OFF  (-128)
+#define GUARD_ON   64
+#define GUARD_CAP  128
+typedef struct {
+    int32_t next, len, step;        /* the reading of the block before (have: there is one) */
+    int32_t keep;                   /* the last beat length read while trusted (0: none) */
+    int16_t score;
+    uint8_t have, stall, off;       /* off: the reading is set aside */
+} guard_t;
+
+static void guard_add(guard_t *g, int d)
+{
+    int v = g->score + d;
+    g->score = (int16_t)(v > GUARD_CAP ? GUARD_CAP : v < -GUARD_CAP ? -GUARD_CAP : v);
+    if (!g->off && g->score <= GUARD_OFF) g->off = 1;
+    else if (g->off && g->score >= GUARD_ON) g->off = 0;
+}
+
+/* judges this block's reading c; 1: use it, 0: run on alone. moving: the reading as grid() tests it. */
+static int guard_check(guard_t *g, const op1_beat_t *c, int moving)
+{
+    if (c->follows_tape > 1 || (c->len > 0 && c->len < (256 << 14))) { guard_add(g, -16); g->have = 0; return !g->off; }
+    if (!moving) { g->have = 0; g->stall = 0; return !g->off; }        /* no clock or the tape stopped: neutral */
+    if (g->have) {
+        if (c->len != g->len) guard_add(g, -1);
+        else {
+            int32_t a = g->next - c->next;                              /* how far it counted down */
+            if (a < 0) a += c->len;                                     /* across the beat */
+            if (a == 0) { if (++g->stall >= 4) { g->stall = 0; guard_add(g, -16); } }
+            else if (a <= 2 * g->step + g->step / 4) { g->stall = 0; guard_add(g, 1); }
+            else { g->stall = 0; guard_add(g, -16); }                  /* a jump */
+        }
+    }
+    g->next = c->next; g->len = c->len; g->step = c->step; g->have = 1;
+    if (!g->off && g->score >= GUARD_ON) g->keep = c->len;              /* only a tempo the clock has earned */
+    return !g->off;
+}
 
 typedef struct {
     uint32_t w;                     /* write index into the ring */
@@ -93,6 +147,7 @@ typedef struct {
     uint32_t hist;                  /* stutter flags of the last HIST slices, bit 0 = newest */
     uint8_t ndiv, reps;
     uint8_t seeded;                 /* this port: the instance learnt its position (the dice's seed) */
+    guard_t guard;                  /* this port (1.2): the clock guard */
 } st_t;
 
 /* kennel's op1_fx_page[pos][3]: FREEZE per effect position (0 synth, 1 drum, 2 master); the key thread writes it
@@ -119,6 +174,7 @@ static void sx_reset(st_t *s, int pos, int16_t *ring)
     s->gin = 0; s->latch = freeze_latch[pos]; s->frozen = 0; s->rec = 0;
     s->rng = 0x2545F491u + (uint32_t)pos * 0x9E3779B9u;
     s->slice = 0; s->hist = 0;
+    s->guard = (guard_t){ 0 };
     if (ring) for (int i = 0; i < NBUF / 2; i++) ((uint32_t *)(void *)ring)[i] = 0;
 }
 
@@ -128,7 +184,10 @@ static int grid(st_t *s, int div, int32_t *slen)
     op1_beat_t c;
     beat_clock(&c);
     int32_t len = c.len, p, step;
-    const int moving = len >= (256 << 14) && c.step > 0 && c.step <= 0x400000 && c.next >= 0 && c.next <= len;
+    int moving = len >= (256 << 14) && c.step > 0 && c.step <= 0x400000 && c.next >= 0 && c.next <= len;
+    if (!guard_check(&s->guard, &c, moving)) {                               /* set aside: the last trusted tempo */
+        moving = 0; len = s->guard.keep;
+    }
     if (len < (256 << 14)) len = 22050 << 14;                                /* no clock: 120 BPM */
     if (moving) { p = c.next; step = c.step; }
     else { p = s->bp < 0 || s->bp > len ? len : s->bp; step = 0x100000; }

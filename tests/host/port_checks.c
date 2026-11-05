@@ -389,14 +389,97 @@ static void stutter_checks(void)
         CHECK(s->len == 22050 && s->sub == 11025, "%s: free-running 120 BPM (slice %d)", c ? "tape stopped" : "no clock", s->len);
         drop(&in, 0);
     }
+    /* the clock guard (1.2): a reading that is not a clock is set aside, a real one never is */
+    {
+        const int32_t L100 = (int32_t)((2646000LL << 14) / 100), L120 = 22050 << 14;
+        short p[8] = { 0, 2304, 0, 32767, 0, 256, 0, 0 };    /* 1/4, repeat, 2 parts */
+        /* a: a real clock at 100 BPM, then a stuck "clock" (a wrong address: next stands at 3, every block a beat) */
+        {
+            inst_t in; make(&in, 0, 0); memcpy(y, x, N * 2);
+            host_beat.len = L100; host_beat.step = 0x100000; host_beat.follows_tape = 0;
+            mock_reg->init(&in.fx);
+            int32_t next = 0; size_t b = 0;
+            for (; b < 400; b++) { host_beat.next = next; mock_reg->mono(&in.fx, y + 64 * b, p); next -= 0x100000; while (next < 0) next += L100; }
+            const st_t *s = in.fx.state;
+            CHECK(!s->guard.off && s->guard.keep == L100, "guard: a real clock is trusted (score %d)", s->guard.score);
+            size_t out = 0;
+            for (; b < NB; b++) { host_beat.next = 3; mock_reg->mono(&in.fx, y + 64 * b, p); if (!out && s->guard.off) out = b - 400; }
+            CHECK(s->guard.off && out && out <= 72, "guard: a stuck reading is set aside after %zu blocks", out);
+            CHECK(s->len == (int32_t)((2646000LL) / 100), "guard: it runs on at the last trusted tempo, 100 BPM (slice %d)", s->len);
+            drop(&in, 0);
+        }
+        /* b: garbage that changes every block (an LCG), from the start: out, and the grid at 120 BPM */
+        {
+            inst_t in; make(&in, 0, 0); memcpy(y, x, N * 2);
+            mock_reg->init(&in.fx);
+            uint32_t r = 12345; size_t out = 0;
+            const st_t *s = in.fx.state;
+            for (size_t b = 0; b < NB; b++) {
+                r = r * 1664525u + 1013904223u; host_beat.len = (int32_t)(r >> 1);
+                r = r * 1664525u + 1013904223u; host_beat.next = (int32_t)(r >> 1);
+                r = r * 1664525u + 1013904223u; host_beat.follows_tape = (uint8_t)(r >> 24);
+                host_beat.step = 0x100000;
+                mock_reg->mono(&in.fx, y + 64 * b, p);
+                if (!out && s->guard.off) out = b + 1;
+            }
+            CHECK(s->guard.off && out && out <= 200, "guard: random readings are set aside after %zu blocks", out);
+            CHECK(s->len == 22050, "guard: no trusted tempo, so 120 BPM (slice %d)", s->len);
+            drop(&in, 0);
+        }
+        /* c: a real clock with a tape restart (a jump to the beat) every 64 blocks and a tempo turn every 32: trusted */
+        {
+            inst_t in; make(&in, 0, 0); memcpy(y, x, N * 2);
+            mock_reg->init(&in.fx);
+            int32_t len = L120, next = 0; int worst = 0;
+            const st_t *s = in.fx.state;
+            for (size_t b = 0; b < NB; b++) {
+                if (b % 32 == 31) { len = b % 64 == 63 ? L120 : L100; if (next > len) next = len; }
+                if (b % 64 == 0) next = 0;                                    /* the tape starts: a beat now */
+                host_beat.len = len; host_beat.next = next; host_beat.step = 0x100000; host_beat.follows_tape = 0;
+                mock_reg->mono(&in.fx, y + 64 * b, p);
+                if (s->guard.off) worst = 1;
+                next -= 0x100000; while (next < 0) next += len;
+            }
+            CHECK(!worst, "guard: restarts and tempo turns never set a real clock aside (score %d)", s->guard.score);
+            drop(&in, 0);
+        }
+        /* d: a clock updated in another thread (0 or 2 steps some blocks) is trusted; a wrong address then a real
+         * clock: the reading comes back */
+        {
+            inst_t in; make(&in, 0, 0); memcpy(y, x, N * 2);
+            mock_reg->init(&in.fx);
+            const st_t *s = in.fx.state;
+            int32_t next = 0; int bad = 0;
+            for (size_t b = 0; b < NB / 2; b++) {
+                host_beat.len = L120; host_beat.next = next; host_beat.step = 0x100000; host_beat.follows_tape = 0;
+                mock_reg->mono(&in.fx, y + 64 * b, p);
+                if (s->guard.off) bad = 1;
+                const int adv = b % 3 == 0 ? 0 : b % 3 == 1 ? 2 : 1;          /* late, catch-up, on time */
+                next -= adv * 0x100000; while (next < 0) next += L120;
+            }
+            CHECK(!bad, "guard: a clock read across threads (0, 2, 1 steps) stays trusted");
+            for (size_t b = 0; b < 64; b++) { host_beat.next = 7; mock_reg->mono(&in.fx, y + 64 * (NB / 2 + b), p); }  /* 64 blocks: GUARD_CAP 128 + 128 at -16 a 4 */
+            CHECK(s->guard.off, "guard: then a stuck reading is set aside");
+            size_t back = 0;
+            for (size_t b = NB / 2 + 64; b < NB; b++) {
+                host_beat.next = next; mock_reg->mono(&in.fx, y + 64 * b, p);
+                next -= 0x100000; while (next < 0) next += L120;
+                if (!back && !s->guard.off) back = b - (NB / 2 + 64) + 1;
+            }
+            CHECK(back && back <= 300, "guard: the real clock comes back after %zu blocks", back);
+            drop(&in, 0);
+        }
+    }
     /* 30 BPM: a 1/4 slice (88200) is cut to the ring (65472); nothing reads outside it (ASan) */
     {
         inst_t in; make(&in, 0, 0);
         short p[8] = { 0, 18000, 32767, 32767, 0, 256, 0, 0 };
         memcpy(y, x, N * 2);
-        host_beat.len = (int32_t)((2646000LL << 14) / 30); host_beat.next = 0; host_beat.step = 0x100000; host_beat.follows_tape = 0;
+        const int32_t L30 = (int32_t)((2646000LL << 14) / 30);
+        host_beat.len = L30; host_beat.step = 0x100000; host_beat.follows_tape = 0;
         mock_reg->init(&in.fx);
-        render_mono(&in, y, NB, p);
+        int32_t next = 0;                                     /* a moving clock (1.2: a reading that stands still is set aside) */
+        for (size_t b = 0; b < NB; b++) { host_beat.next = next; mock_reg->mono(&in.fx, y + 64 * b, p); next -= 0x100000; while (next < 0) next += L30; }
         CHECK(((const st_t *)in.fx.state)->len == NBUF - 64, "30 BPM: the slice is cut to the ring");
         drop(&in, 0);
     }
