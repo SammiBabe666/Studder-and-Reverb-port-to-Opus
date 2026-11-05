@@ -14,4 +14,11 @@ for p in reverb stutter; do
     python3 "$KIT/plugin_tool.py" build "$ROOT/plugins/sammi.$p" --out "$OUT/sammi.$p.opmod"
     python3 "$KIT/plugin_tool.py" show "$OUT/sammi.$p.opmod"
 done
-cd "$OUT" && sha256sum sammi.reverb.opmod sammi.stutter.opmod
+# STUTTER with no deep reads (STUTTER_NO_DEEP: the grid always at 120 BPM): the same plugin from a copy of its folder
+# whose source defines the name first (the kit's build takes no defines); same id, so saved sounds load either
+ND="$OUT/nodeep-src/sammi.stutter"; rm -rf "$OUT/nodeep-src"; mkdir -p "$ND" "$OUT/nodeep"
+cp -R "$ROOT/plugins/sammi.stutter/." "$ND/"
+{ echo "#define STUTTER_NO_DEEP 1"; cat "$ROOT/plugins/sammi.stutter/stutter.c"; } > "$ND/stutter.c"
+python3 "$KIT/plugin_tool.py" build "$ND" --out "$OUT/nodeep/sammi.stutter.opmod"
+python3 "$KIT/plugin_tool.py" show "$OUT/nodeep/sammi.stutter.opmod" | grep -E "^(version|deep|imports)"
+cd "$OUT" && sha256sum sammi.reverb.opmod sammi.stutter.opmod nodeep/sammi.stutter.opmod

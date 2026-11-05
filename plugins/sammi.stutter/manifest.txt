@@ -3,12 +3,13 @@
 # shift + blue sets the repeats (2-16), shift + orange freezes (clockwise on, anticlockwise off).
 # Its page's picture (the defective tape head) is drawn under the OS's screen, so the OS's off overlay dims it.
 # core 2.2: opus_instrument_now, opus_fx_owner, opus_fx_page_shown (the managers' service).
-# Deep, read-only: the metronome's beat clock and the tape's speed at firmware #246's addresses (as kennel reads them).
+# Deep, read-only: the metronome's beat clock and the tape's speed at firmware #246's addresses (as kennel reads them),
+# trusted only while they behave like a clock (1.2: the clock guard); build/opus/nodeep: a build with no deep reads.
 opmod     1
 id        sammi.stutter
 name      Stutter
 author    sammi
-version   1.1.0
+version   1.2.0
 core      2.2
 adds      effect hkstutter
 uses      blue_turn shift modal "repeats on its fx page"

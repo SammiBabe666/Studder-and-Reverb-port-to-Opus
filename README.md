@@ -131,7 +131,10 @@ manifest as `modal`, so they never clash with another plugin.
 - **Untested on hardware** (see the status table). A `checked device` line goes into each manifest only after it has
   run on an OP-1.
 - **STUTTER reads firmware memory directly (read only).** Opus 2 has no tempo service, so it reads the stock
-  metronome's beat clock and the tape speed at firmware 246's addresses, exactly as kennel does.
+  metronome's beat clock and the tape speed at firmware 246's addresses, exactly as kennel does. Since 1.2.0 the
+  reading is only trusted while it behaves like a clock: if those addresses ever hold something else, STUTTER
+  runs on at the last good tempo (else 120 BPM) instead of following it. A build with no firmware reads at all
+  is made beside the normal one (`nodeep/`), as a fallback; it always runs at 120 BPM.
 - **Neither effect is true stereo, as on kennel.** Both originals are mono; on the master they process (L + R) / 2,
   and their change is added to both sides.
 - **Reverb, at the very top of time:** the original keeps a tiny idle residue at some tone settings: ±8 LSB, about
